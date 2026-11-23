@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mufy Auto Retry
 // @namespace    local.codex
-// @version      4.1
+// @version      4.2
 // @description  Automatically retries Mufy responses on MUMU-1.5, dismisses the retry prompt, and refreshes after every 10 retries.
 // @match        https://chat.mufy.ai/*
 // @downloadURL  https://raw.githubusercontent.com/CizoEN/assets/main/mufy-auto-retry.user.js
@@ -54,13 +54,14 @@
     expectedModel: 'MUMU-1.5',
   };
 
-  const SCRIPT_VERSION = 'v4.1';
+  const SCRIPT_VERSION = 'v4.2';
   const AUTO_STOP_AT = new Date('2026-11-24T07:55:00+08:00').getTime();
   const AI_ROW_SELECTOR = '.flex.items-start.px-3.py-2';
   const RETRY_BUTTON_SELECTOR = '#mufy_chat_input_replay_btn';
   const MODEL_BUTTON_SELECTOR = '#mufy_chat_input_model_btn';
   const USER_MESSAGE_SELECTOR = '.mufy_user_message_bubble';
   const RESUME_KEY = 'mufy-auto-retry-resume';
+  const MODEL_RELOAD_KEY = 'mufy-auto-retry-model-reload-at';
   const SEED_KEY = `mufy-auto-retry-seeded:${
     pageUrl.searchParams.get('sessionId') || 'default'
   }`;
@@ -160,6 +161,10 @@
 
   function dispatchClick(element) {
     if (!element) return;
+    if (typeof element.click === 'function') {
+      element.click();
+      return;
+    }
     element.dispatchEvent(
       new MouseEvent('click', {
         bubbles: true,
@@ -333,6 +338,15 @@
     );
   }
 
+  function getModelReloadAt() {
+    return Number(sessionStorage.getItem(MODEL_RELOAD_KEY) || 0);
+  }
+
+  function hasPendingModelReload() {
+    const reloadedAt = getModelReloadAt();
+    return reloadedAt > 0 && Date.now() - reloadedAt < 8000;
+  }
+
   function getModelDialogSelection(dialog) {
     const candidates = Array.from(dialog.querySelectorAll('div')).filter(
       (element) => {
@@ -400,39 +414,6 @@
       return true;
     }
 
-    const verifyCommit = () => {
-      let attempts = 0;
-      const maxAttempts = Math.ceil(
-        CONFIG.modelCommitTimeoutMs / CONFIG.verifyModelPollMs
-      );
-      const verify = () => {
-        attempts += 1;
-        if (isExpectedModel()) {
-          const staleDialog = getModelDialog();
-          if (staleDialog) {
-            const cancelButton = Array.from(
-              staleDialog.querySelectorAll('button')
-            ).find(
-              (button) =>
-                (button.textContent || '').trim() === '取消' &&
-                isUiVisible(button)
-            );
-            dispatchClick(cancelButton);
-          }
-          modelSwitchInProgress = false;
-          lastModelFailureAt = 0;
-          updateStatus(`已锁定 ${CONFIG.expectedModel}`);
-          return;
-        }
-        if (attempts < maxAttempts) {
-          window.setTimeout(verify, CONFIG.verifyModelPollMs);
-          return;
-        }
-        failModelSwitch(`确认 ${CONFIG.expectedModel} 超时`);
-      };
-      window.setTimeout(verify, CONFIG.verifyModelPollMs);
-    };
-
     const clickConfirm = () => {
       const currentDialog = getModelDialog();
       const currentConfirm = currentDialog
@@ -444,8 +425,18 @@
       }
       lastModelActionAt = Date.now();
       updateStatus(`已提交 ${CONFIG.expectedModel}，等待切换`);
+      sessionStorage.setItem(MODEL_RELOAD_KEY, String(Date.now()));
       dispatchClick(currentConfirm);
-      verifyCommit();
+      window.setTimeout(() => {
+        if (isExpectedModel()) {
+          sessionStorage.removeItem(MODEL_RELOAD_KEY);
+          modelSwitchInProgress = false;
+          lastModelFailureAt = 0;
+          updateStatus(`已锁定 ${CONFIG.expectedModel}`);
+          return;
+        }
+        window.location.reload();
+      }, 1000);
     };
 
     if (alreadySelected) {
@@ -483,6 +474,15 @@
   function selectExpectedModel() {
     if (modelSwitchInProgress) return;
     if (isModelFailureCoolingDown()) return;
+
+    if (isExpectedModel()) {
+      sessionStorage.removeItem(MODEL_RELOAD_KEY);
+      return;
+    }
+    if (hasPendingModelReload()) {
+      updateStatus(`刷新后等待 ${CONFIG.expectedModel}`);
+      return;
+    }
 
     const openDialog = getModelDialog();
     if (openDialog) {
@@ -596,6 +596,7 @@
       }, 900);
       return;
     }
+    sessionStorage.removeItem(MODEL_RELOAD_KEY);
 
     running = true;
     retries = Number.isFinite(options.resumeRetries)
@@ -1060,6 +1061,7 @@
     if (enforceAutoStop()) return;
     if (userStopped || modelSwitchInProgress) return;
     if (!document.querySelector(MODEL_BUTTON_SELECTOR)) return;
+    if (hasPendingModelReload() && !isExpectedModel()) return;
 
     const modelDialog = getModelDialog();
     if (modelDialog) {
