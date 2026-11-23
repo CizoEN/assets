@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mufy Auto Retry
 // @namespace    local.codex
-// @version      3.6
+// @version      3.7
 // @description  Automatically retries Mufy responses on MUMU-1.5, dismisses the retry prompt, and refreshes after every 10 retries.
 // @match        https://chat.mufy.ai/*
 // @downloadURL  https://raw.githubusercontent.com/CizoEN/assets/main/mufy-auto-retry.user.js
@@ -53,7 +53,7 @@
     expectedModel: 'MUMU-1.5',
   };
 
-  const SCRIPT_VERSION = 'v3.6';
+  const SCRIPT_VERSION = 'v3.7';
   const AI_ROW_SELECTOR = '.flex.items-start.px-3.py-2';
   const RETRY_BUTTON_SELECTOR = '#mufy_chat_input_replay_btn';
   const MODEL_BUTTON_SELECTOR = '#mufy_chat_input_model_btn';
@@ -84,6 +84,7 @@
   let mutationTimer = null;
   let pollTimer = null;
   let interruptTimer = null;
+  let seenOutputRows = new WeakSet();
 
   function displayMaxRetries() {
     return Number.isFinite(CONFIG.maxRetries) ? CONFIG.maxRetries : '∞';
@@ -165,8 +166,27 @@
     );
   }
 
+  function getAiRows() {
+    return Array.from(document.querySelectorAll(AI_ROW_SELECTOR));
+  }
+
+  function getLatestAiRow() {
+    const rows = getAiRows();
+    return rows.length ? rows[rows.length - 1] : null;
+  }
+
+  function markAiRowsSeen() {
+    getAiRows().forEach((row) => seenOutputRows.add(row));
+  }
+
+  function getUnseenOutputRow() {
+    const row = getLatestAiRow();
+    if (!row || seenOutputRows.has(row)) return null;
+    return row.querySelector('.react-markdown') ? row : null;
+  }
+
   function getLatestAiText() {
-    const rows = Array.from(document.querySelectorAll(AI_ROW_SELECTOR));
+    const rows = getAiRows();
     for (let i = rows.length - 1; i >= 0; i -= 1) {
       const markdown = rows[i].querySelector('.react-markdown');
       if (!markdown) continue;
@@ -566,6 +586,7 @@
     lastCycleActionAt = Date.now();
     lastSeenText = getLatestAiText();
     lastUserMessageCount = getUserMessageCount();
+    markAiRowsSeen();
     updateStatus('等待新输出');
 
     if (pollTimer) clearInterval(pollTimer);
@@ -612,6 +633,7 @@
     expectingOutput = true;
     lastOutputActivityAt = Date.now();
     saveResumeState();
+    markAiRowsSeen();
 
     // Mufy's control is a div, so use a real click event for React's delegated handler.
     dispatchClick(button);
@@ -752,6 +774,7 @@
       );
 
       if (sendButton) {
+        markAiRowsSeen();
         dispatchClick(sendButton);
         seedInProgress = false;
         markSeedSent();
@@ -768,6 +791,7 @@
         return;
       }
 
+      markAiRowsSeen();
       textarea.dispatchEvent(
         new KeyboardEvent('keydown', {
           key: 'Enter',
@@ -890,6 +914,7 @@
       return;
     }
 
+    const unseenOutputRow = getUnseenOutputRow();
     const userMessageCount = getUserMessageCount();
     if (userMessageCount > lastUserMessageCount) {
       lastUserMessageCount = userMessageCount;
@@ -904,6 +929,22 @@
       lastSeenText = text;
       expectingOutput = false;
       lastOutputActivityAt = Date.now();
+    }
+
+    if (unseenOutputRow) {
+      const stopButton = getStopButton();
+      if (!stopButton) return;
+      seenOutputRows.add(unseenOutputRow);
+      lastOutputActivityAt = Date.now();
+      updateStatus('检测到输出 div，准备暂停');
+      if (!interruptTimer) {
+        interruptTimer = window.setTimeout(() => {
+          interruptTimer = null;
+          if (!running || retrySequenceRunning) return;
+          if (getStopButton()) beginRetrySequence();
+        }, randomDelay(CONFIG.stopDelayMinMs, CONFIG.stopDelayMaxMs));
+      }
+      return;
     }
 
     reloadForStall();
