@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mufy Auto Retry
 // @namespace    local.codex
-// @version      1.8
+// @version      1.9
 // @description  Automatically retries Mufy responses on MUMU-1.5, dismisses the retry prompt, and refreshes after every 10 retries.
 // @match        https://chat.mufy.ai/*
 // @downloadURL  https://raw.githubusercontent.com/CizoEN/assets/main/mufy-auto-retry.user.js
@@ -17,6 +17,16 @@
   if (window.__mufyAutoRetryInstalled) return;
   window.__mufyAutoRetryInstalled = true;
 
+  const TARGET_ROLE_ID = '303ec8a5-54eb-42df-9e6e-72272be87359';
+  const pageUrl = new URL(location.href);
+  if (
+    pageUrl.hostname !== 'chat.mufy.ai' ||
+    pageUrl.pathname !== '/chat' ||
+    pageUrl.searchParams.get('roleId') !== TARGET_ROLE_ID
+  ) {
+    return;
+  }
+
   const CONFIG = {
     maxRetries: 10,
     minGapMs: 1200,
@@ -27,7 +37,7 @@
     expectedModel: 'MUMU-1.5',
   };
 
-  const SCRIPT_VERSION = 'v1.8';
+  const SCRIPT_VERSION = 'v1.9';
   const AI_ROW_SELECTOR = '.flex.items-start.px-3.py-2';
   const RETRY_BUTTON_SELECTOR = '#mufy_chat_input_replay_btn';
   const MODEL_BUTTON_SELECTOR = '#mufy_chat_input_model_btn';
@@ -43,6 +53,8 @@
   let nextAllowedAt = 0;
   let lastConflictClickAt = 0;
   let retrySequenceRunning = false;
+  let modelSwitchInProgress = false;
+  let seedInProgress = false;
   let mutationTimer = null;
   let pollTimer = null;
 
@@ -215,6 +227,72 @@
     );
   }
 
+  function selectExpectedModel() {
+    if (modelSwitchInProgress || isExpectedModel()) return;
+    modelSwitchInProgress = true;
+    updateStatus(`正在切换 ${CONFIG.expectedModel}`);
+
+    const modelButton = document.querySelector(MODEL_BUTTON_SELECTOR);
+    if (!modelButton) {
+      modelSwitchInProgress = false;
+      updateStatus('未找到模型按钮');
+      return;
+    }
+
+    modelButton.click();
+    let attempts = 0;
+    const chooseOption = () => {
+      attempts += 1;
+      const label = Array.from(document.querySelectorAll('span')).find(
+        (span) => (span.textContent || '').trim() === CONFIG.expectedModel
+      );
+      const option = label?.closest('.cursor-pointer');
+
+      if (!option) {
+        if (attempts < 30) {
+          window.setTimeout(chooseOption, 100);
+        } else {
+          modelSwitchInProgress = false;
+          updateStatus(`未找到 ${CONFIG.expectedModel}`);
+        }
+        return;
+      }
+
+      option.click();
+      window.setTimeout(() => {
+        const radio = Array.from(
+          document.querySelectorAll('button[role="radio"]')
+        ).find((element) => {
+          const rect = element.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        });
+        radio?.click();
+
+        window.setTimeout(() => {
+          const confirm = Array.from(
+            document.querySelectorAll('button')
+          ).find(
+            (element) =>
+              (element.textContent || '').trim() === '确定' &&
+              element.getBoundingClientRect().width > 0
+          );
+          confirm?.click();
+
+          window.setTimeout(() => {
+            modelSwitchInProgress = false;
+            updateStatus(
+              isExpectedModel()
+                ? `已切换 ${CONFIG.expectedModel}`
+                : `切换 ${CONFIG.expectedModel} 失败`
+            );
+          }, 350);
+        }, 80);
+      }, 100);
+    };
+
+    window.setTimeout(chooseOption, 100);
+  }
+
   function getUserMessageCount() {
     return document.querySelectorAll(USER_MESSAGE_SELECTOR).length;
   }
@@ -262,8 +340,10 @@
 
   function start(options = {}) {
     if (!isExpectedModel()) {
-      running = false;
-      updateStatus(`请先切换 ${CONFIG.expectedModel}`);
+      selectExpectedModel();
+      window.setTimeout(() => {
+        if (isExpectedModel()) start(options);
+      }, 900);
       return;
     }
 
@@ -284,6 +364,19 @@
 
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = setInterval(scan, CONFIG.fallbackPollMs);
+
+    if (!lastSeenText) {
+      window.setTimeout(() => {
+        if (
+          running &&
+          !getLatestAiText() &&
+          !getRetryButton() &&
+          !getStopButton()
+        ) {
+          sendOneFallback();
+        }
+      }, 3000);
+    }
 
     if (options.afterRefresh) {
       expectingOutput = true;
@@ -369,11 +462,72 @@
         window.setTimeout(waitForReplay, 100);
       } else {
         retrySequenceRunning = false;
-        updateStatus('重说按钮未恢复');
+        sendOneFallback();
       }
     };
 
     window.setTimeout(waitForReplay, 80);
+  }
+
+  function sendOneFallback() {
+    if (seedInProgress) return;
+    const textarea = document.querySelector('#mufy_chat_input_box textarea');
+    const inputBox = document.querySelector('#mufy_chat_input_box');
+    if (!textarea || !inputBox) {
+      updateStatus('未找到输入框');
+      return;
+    }
+
+    seedInProgress = true;
+    updateStatus('没有输出，发送 1');
+
+    const valueSetter = Object.getOwnPropertyDescriptor(
+      HTMLTextAreaElement.prototype,
+      'value'
+    )?.set;
+    valueSetter?.call(textarea, '1');
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+
+    let attempts = 0;
+    const submit = () => {
+      attempts += 1;
+      const sendButton = Array.from(
+        inputBox.querySelectorAll('button')
+      ).find(
+        (button) =>
+          button !== document.querySelector(MODEL_BUTTON_SELECTOR) &&
+          !button.disabled &&
+          button.getBoundingClientRect().width > 0
+      );
+
+      if (sendButton) {
+        sendButton.click();
+        seedInProgress = false;
+        expectingOutput = true;
+        lastOutputActivityAt = Date.now();
+        lastUserMessageCount = getUserMessageCount();
+        return;
+      }
+
+      if (attempts < 20) {
+        window.setTimeout(submit, 100);
+        return;
+      }
+
+      textarea.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'Enter',
+          code: 'Enter',
+          keyCode: 13,
+          which: 13,
+          bubbles: true,
+          cancelable: true,
+        })
+      );
+      seedInProgress = false;
+    };
+
+    window.setTimeout(submit, 80);
   }
 
   function refreshAfterCycle() {
@@ -414,7 +568,7 @@
     if (retrySequenceRunning) return;
 
     if (!isExpectedModel()) {
-      stop(`模型不是 ${CONFIG.expectedModel}`);
+      selectExpectedModel();
       return;
     }
 
@@ -476,9 +630,10 @@
     let attempts = 0;
     const resumeTimer = setInterval(() => {
       attempts += 1;
+      const modelButton = document.querySelector(MODEL_BUTTON_SELECTOR);
       if (
-        document.querySelector(MODEL_BUTTON_SELECTOR) &&
-        isExpectedModel()
+        modelButton &&
+        (modelButton.textContent || '').trim() !== '选择模型'
       ) {
         clearInterval(resumeTimer);
         if (resumeData.maxRetries !== savedMaxRetries()) {
