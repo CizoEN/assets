@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mufy Auto Retry
 // @namespace    local.codex
-// @version      1.9
+// @version      1.10
 // @description  Automatically retries Mufy responses on MUMU-1.5, dismisses the retry prompt, and refreshes after every 10 retries.
 // @match        https://chat.mufy.ai/*
 // @downloadURL  https://raw.githubusercontent.com/CizoEN/assets/main/mufy-auto-retry.user.js
@@ -37,7 +37,7 @@
     expectedModel: 'MUMU-1.5',
   };
 
-  const SCRIPT_VERSION = 'v1.9';
+  const SCRIPT_VERSION = 'v1.10';
   const AI_ROW_SELECTOR = '.flex.items-start.px-3.py-2';
   const RETRY_BUTTON_SELECTOR = '#mufy_chat_input_replay_btn';
   const MODEL_BUTTON_SELECTOR = '#mufy_chat_input_model_btn';
@@ -485,17 +485,24 @@
       HTMLTextAreaElement.prototype,
       'value'
     )?.set;
-    valueSetter?.call(textarea, '1');
+    if (valueSetter) {
+      valueSetter.call(textarea, '1');
+    } else {
+      textarea.value = '1';
+    }
+    textarea.focus();
     textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    textarea.dispatchEvent(new Event('change', { bubbles: true }));
 
     let attempts = 0;
     const submit = () => {
       attempts += 1;
+      const modelNode = document.querySelector(MODEL_BUTTON_SELECTOR);
       const sendButton = Array.from(
         inputBox.querySelectorAll('button')
       ).find(
         (button) =>
-          button !== document.querySelector(MODEL_BUTTON_SELECTOR) &&
+          !(modelNode && button.contains(modelNode)) &&
           !button.disabled &&
           button.getBoundingClientRect().width > 0
       );
