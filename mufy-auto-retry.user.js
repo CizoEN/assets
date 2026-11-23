@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mufy Auto Retry
 // @namespace    local.codex
-// @version      3.9.7
+// @version      3.9.8
 // @description  Automatically retries Mufy responses on MUMU-1.5, dismisses the retry prompt, and refreshes after every 10 retries.
 // @match        https://chat.mufy.ai/*
 // @downloadURL  https://raw.githubusercontent.com/CizoEN/assets/main/mufy-auto-retry.user.js
@@ -60,7 +60,7 @@
     expectedModel: 'MUMU-1.5',
   };
 
-  const SCRIPT_VERSION = 'v3.9.7';
+  const SCRIPT_VERSION = 'v3.9.8';
   const AUTO_STOP_AT = new Date('2026-11-24T07:55:00+08:00').getTime();
   const AI_ROW_SELECTOR = '.flex.items-start.px-3.py-2';
   const RETRY_BUTTON_SELECTOR = '#mufy_chat_input_replay_btn';
@@ -842,18 +842,35 @@
     lastFallbackAt = Date.now();
     updateStatus(force ? '5 秒无输出，自动发送 1' : '没有输出，发送 1');
 
-    const valueSetter = Object.getOwnPropertyDescriptor(
-      HTMLTextAreaElement.prototype,
-      'value'
-    )?.set;
-    if (valueSetter) {
-      valueSetter.call(textarea, '1');
-    } else {
-      textarea.value = '1';
-    }
     textarea.focus();
-    textarea.dispatchEvent(new Event('input', { bubbles: true }));
-    textarea.dispatchEvent(new Event('change', { bubbles: true }));
+    textarea.select();
+    let insertedByBrowser = false;
+    try {
+      insertedByBrowser = document.execCommand('insertText', false, '1');
+    } catch {
+      insertedByBrowser = false;
+    }
+
+    if (!insertedByBrowser || textarea.value !== '1') {
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        'value'
+      )?.set;
+      if (valueSetter) {
+        valueSetter.call(textarea, '1');
+      } else {
+        textarea.value = '1';
+      }
+      textarea.dispatchEvent(
+        new InputEvent('input', {
+          bubbles: true,
+          composed: true,
+          inputType: 'insertText',
+          data: '1',
+        })
+      );
+      textarea.dispatchEvent(new Event('change', { bubbles: true }));
+    }
 
     let attempts = 0;
     const submit = () => {
