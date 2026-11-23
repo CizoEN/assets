@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mufy Auto Retry
 // @namespace    local.codex
-// @version      1.5
+// @version      1.6
 // @description  Automatically retries Mufy responses on MUMU-1.5, dismisses the retry prompt, and refreshes after every 10 retries.
 // @match        https://chat.mufy.ai/*
 // @downloadURL  https://raw.githubusercontent.com/CizoEN/assets/main/mufy-auto-retry.user.js
@@ -40,6 +40,7 @@
   let expectingOutput = false;
   let lastOutputActivityAt = 0;
   let nextAllowedAt = 0;
+  let lastConflictClickAt = 0;
   let mutationTimer = null;
   let pollTimer = null;
 
@@ -148,6 +149,37 @@
     if (!retryButton) return false;
 
     window.setTimeout(() => retryButton.click(), 40);
+    return true;
+  }
+
+  function confirmSessionConflict() {
+    const candidates = Array.from(
+      document.querySelectorAll('button, [role="button"], div')
+    ).filter((element) => {
+      if ((element.textContent || '').trim() !== '终止冲突对话') return false;
+      const style = getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return (
+        style.display !== 'none' &&
+        style.visibility !== 'hidden' &&
+        style.pointerEvents !== 'none' &&
+        rect.width > 0 &&
+        rect.height > 0
+      );
+    });
+
+    if (!candidates.length) return false;
+    if (Date.now() - lastConflictClickAt < 1800) return true;
+
+    const button = candidates.sort(
+      (a, b) =>
+        a.getBoundingClientRect().width * a.getBoundingClientRect().height -
+        b.getBoundingClientRect().width * b.getBoundingClientRect().height
+    )[0];
+    lastConflictClickAt = Date.now();
+    button.click();
+    lastOutputActivityAt = Date.now();
+    expectingOutput = true;
     return true;
   }
 
@@ -303,6 +335,11 @@
   function scan() {
     if (!running || document.hidden || userIsTyping()) return;
 
+    if (confirmSessionConflict()) {
+      updateStatus('已终止冲突对话');
+      return;
+    }
+
     if (confirmRetryDialog()) {
       updateStatus('已勾选不再提示');
       return;
@@ -377,7 +414,10 @@
     let attempts = 0;
     const resumeTimer = setInterval(() => {
       attempts += 1;
-      if (document.querySelector(MODEL_BUTTON_SELECTOR)) {
+      if (
+        document.querySelector(MODEL_BUTTON_SELECTOR) &&
+        isExpectedModel()
+      ) {
         clearInterval(resumeTimer);
         if (resumeData.maxRetries !== savedMaxRetries()) {
           clearResumeState();
@@ -388,10 +428,10 @@
           resumeRetries: resumeData.retries || 0,
           afterRefresh: true,
         });
-      } else if (attempts >= 20) {
+      } else if (attempts >= 40) {
         clearInterval(resumeTimer);
         clearResumeState();
-        updateStatus('刷新后未找到模型');
+        updateStatus(`刷新后未找到 ${CONFIG.expectedModel}`);
       }
     }, 500);
   }
