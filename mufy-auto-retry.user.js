@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mufy Auto Retry
 // @namespace    local.codex
-// @version      4.0
+// @version      4.1
 // @description  Automatically retries Mufy responses on MUMU-1.5, dismisses the retry prompt, and refreshes after every 10 retries.
 // @match        https://chat.mufy.ai/*
 // @downloadURL  https://raw.githubusercontent.com/CizoEN/assets/main/mufy-auto-retry.user.js
@@ -29,19 +29,20 @@
 
   const CONFIG = {
     maxRetries: 10,
-    minGapMinMs: 120,
-    minGapMaxMs: 220,
-    stopDelayMinMs: 120,
-    stopDelayMaxMs: 220,
+    minGapMinMs: 500,
+    minGapMaxMs: 650,
+    stopDelayMinMs: 450,
+    stopDelayMaxMs: 600,
     retrySettleMinMs: 120,
     retrySettleMaxMs: 220,
+    replaySettleMs: 500,
     replayWaitTimeoutMs: 50000,
     modelActionDelayMs: 650,
     modelSelectionSettleMs: 900,
     modelCommitTimeoutMs: 12000,
     modelFailureCooldownMs: 30000,
     verifyModelPollMs: 250,
-    idleRetryGraceMs: 300,
+    idleRetryGraceMs: 500,
     idleSeedDelayMs: 1200,
     emptySeedDelayMs: 600,
     retryDialogSettleMs: 180,
@@ -53,7 +54,7 @@
     expectedModel: 'MUMU-1.5',
   };
 
-  const SCRIPT_VERSION = 'v4.0';
+  const SCRIPT_VERSION = 'v4.1';
   const AUTO_STOP_AT = new Date('2026-11-24T07:55:00+08:00').getTime();
   const AI_ROW_SELECTOR = '.flex.items-start.px-3.py-2';
   const RETRY_BUTTON_SELECTOR = '#mufy_chat_input_replay_btn';
@@ -503,6 +504,7 @@
     dispatchClick(modelButton);
 
     let attempts = 0;
+    let replayVisibleSince = 0;
     const waitForDialog = () => {
       attempts += 1;
       const dialog = getModelDialog();
@@ -719,10 +721,21 @@
       const stop = getStopButton();
       const retryButton = getRetryButton();
 
-      if (!stop && retryButton && Date.now() >= nextAllowedAt) {
-        retrySequenceRunning = false;
-        clickRetry(retryButton);
-        return;
+      if (!stop && retryButton) {
+        if (!replayVisibleSince) {
+          replayVisibleSince = Date.now();
+          updateStatus('重说已恢复，等待约 0.5 秒');
+        }
+        if (
+          Date.now() - replayVisibleSince >= CONFIG.replaySettleMs &&
+          Date.now() >= nextAllowedAt
+        ) {
+          retrySequenceRunning = false;
+          clickRetry(retryButton);
+          return;
+        }
+      } else {
+        replayVisibleSince = 0;
       }
 
       attempts += 1;
