@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mufy Auto Retry
 // @namespace    local.codex
-// @version      3.9.4
+// @version      3.9.5
 // @description  Automatically retries Mufy responses on MUMU-1.5, dismisses the retry prompt, and refreshes after every 10 retries.
 // @match        https://chat.mufy.ai/*
 // @downloadURL  https://raw.githubusercontent.com/CizoEN/assets/main/mufy-auto-retry.user.js
@@ -60,7 +60,7 @@
     expectedModel: 'MUMU-1.5',
   };
 
-  const SCRIPT_VERSION = 'v3.9.4';
+  const SCRIPT_VERSION = 'v3.9.5';
   const AUTO_STOP_AT = new Date('2026-11-24T07:55:00+08:00').getTime();
   const AI_ROW_SELECTOR = '.flex.items-start.px-3.py-2';
   const RETRY_BUTTON_SELECTOR = '#mufy_chat_input_replay_btn';
@@ -181,6 +181,26 @@
         view: window,
       })
     );
+  }
+
+  function pressSendButton(element) {
+    if (!element) return;
+    const rect = element.getBoundingClientRect();
+    const options = {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      view: window,
+      clientX: rect.left + rect.width / 2,
+      clientY: rect.top + rect.height / 2,
+      button: 0,
+    };
+    element.focus?.();
+    element.dispatchEvent(new PointerEvent('pointerdown', options));
+    element.dispatchEvent(new MouseEvent('mousedown', options));
+    element.dispatchEvent(new PointerEvent('pointerup', options));
+    element.dispatchEvent(new MouseEvent('mouseup', options));
+    element.click();
   }
 
   function getAiRows() {
@@ -837,29 +857,59 @@
     const submit = () => {
       attempts += 1;
       const modelNode = document.querySelector(MODEL_BUTTON_SELECTOR);
-      const sendButton = Array.from(
-        inputBox.querySelectorAll('button')
-      ).find(
-        (button) =>
-          !(modelNode && button.contains(modelNode)) &&
-          !button.disabled &&
-          button.getBoundingClientRect().width > 0
-      );
+      const sendButtons = Array.from(inputBox.querySelectorAll('button'))
+        .filter(
+          (button) =>
+            !(modelNode && button.contains(modelNode)) &&
+            !button.disabled &&
+            button.getBoundingClientRect().width > 0
+        )
+        .sort(
+          (a, b) =>
+            b.getBoundingClientRect().right - a.getBoundingClientRect().right
+        );
+      const sendButton = sendButtons[0];
 
       if (sendButton) {
         markAiRowsSeen();
-        dispatchClick(sendButton);
-        seedInProgress = false;
-        markSeedSent();
-        expectingOutput = true;
-        lastOutputActivityAt = Date.now();
-        lastCycleActionAt = Date.now();
-        lastUserMessageCount = getUserMessageCount();
-        updateStatus('已发送 1，后续只用重说');
+        updateStatus('正在提交 1');
+        const rowsBefore = getAiRows().length;
+        pressSendButton(sendButton);
+        window.setTimeout(() => {
+          const submitted =
+            !(textarea.value || '').trim() ||
+            Boolean(getStopButton()) ||
+            getAiRows().length > rowsBefore;
+
+          if (!submitted) {
+            textarea.focus();
+            for (const type of ['keydown', 'keypress', 'keyup']) {
+              textarea.dispatchEvent(
+                new KeyboardEvent(type, {
+                  key: 'Enter',
+                  code: 'Enter',
+                  keyCode: 13,
+                  which: 13,
+                  bubbles: true,
+                  cancelable: true,
+                  composed: true,
+                })
+              );
+            }
+          }
+
+          seedInProgress = false;
+          markSeedSent();
+          expectingOutput = true;
+          lastOutputActivityAt = Date.now();
+          lastCycleActionAt = Date.now();
+          lastUserMessageCount = getUserMessageCount();
+          updateStatus('已发送 1，后续只用重说');
+        }, 450);
         return;
       }
 
-      if (attempts < 20) {
+      if (attempts < 30) {
         window.setTimeout(submit, 100);
         return;
       }
@@ -883,7 +933,7 @@
       updateStatus('已发送 1，后续只用重说');
     };
 
-    window.setTimeout(submit, 80);
+    window.setTimeout(submit, 300);
     return true;
   }
 
