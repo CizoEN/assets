@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mufy Auto Retry
 // @namespace    local.codex
-// @version      1.11
+// @version      2.0
 // @description  Automatically retries Mufy responses on MUMU-1.5, dismisses the retry prompt, and refreshes after every 10 retries.
 // @match        https://chat.mufy.ai/*
 // @downloadURL  https://raw.githubusercontent.com/CizoEN/assets/main/mufy-auto-retry.user.js
@@ -37,7 +37,7 @@
     expectedModel: 'MUMU-1.5',
   };
 
-  const SCRIPT_VERSION = 'v1.11';
+  const SCRIPT_VERSION = 'v2.0';
   const AI_ROW_SELECTOR = '.flex.items-start.px-3.py-2';
   const RETRY_BUTTON_SELECTOR = '#mufy_chat_input_replay_btn';
   const MODEL_BUTTON_SELECTOR = '#mufy_chat_input_model_btn';
@@ -339,6 +339,8 @@
   }
 
   function start(options = {}) {
+    if (running) return;
+
     if (!isExpectedModel()) {
       selectExpectedModel();
       window.setTimeout(() => {
@@ -665,6 +667,15 @@
   }
 
   resumeAfterReload();
+
+  // On a normal first load (not an automatic refresh), start the retry watcher
+  // automatically after Mufy has rendered the model button.
+  window.setTimeout(() => {
+    if (running) return;
+    const modelButton = document.querySelector(MODEL_BUTTON_SELECTOR);
+    if (!modelButton) return;
+    start();
+  }, 1200);
 
   window.mufyAutoRetry = {
     start,
