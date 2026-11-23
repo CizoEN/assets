@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mufy Auto Retry
 // @namespace    local.codex
-// @version      1.4
+// @version      1.5
 // @description  Automatically retries Mufy responses on MUMU-1.5, dismisses the retry prompt, and refreshes after every 10 retries.
 // @match        https://chat.mufy.ai/*
 // @downloadURL  https://raw.githubusercontent.com/CizoEN/assets/main/mufy-auto-retry.user.js
@@ -19,16 +19,15 @@
 
   const CONFIG = {
     maxRetries: 10,
-    minGapMs: 2600,
+    minGapMs: 1200,
     stallTimeoutMs: 120000,
     resumeDelayMs: 2200,
-    mutationDebounceMs: 300,
-    fallbackPollMs: 700,
+    mutationDebounceMs: 80,
+    fallbackPollMs: 250,
     expectedModel: 'MUMU-1.5',
   };
 
-  const AI_TEXT_SELECTOR =
-    '.flex.items-start.px-3.py-2 .react-markdown p.leading-5.text-white';
+  const AI_ROW_SELECTOR = '.flex.items-start.px-3.py-2';
   const RETRY_BUTTON_SELECTOR = '#mufy_chat_input_replay_btn';
   const MODEL_BUTTON_SELECTOR = '#mufy_chat_input_model_btn';
   const USER_MESSAGE_SELECTOR = '.mufy_user_message_bubble';
@@ -97,9 +96,13 @@
   document.documentElement.appendChild(panel);
 
   function getLatestAiText() {
-    const textNodes = Array.from(document.querySelectorAll(AI_TEXT_SELECTOR));
-    for (let i = textNodes.length - 1; i >= 0; i -= 1) {
-      const text = (textNodes[i].textContent || '').trim();
+    const rows = Array.from(document.querySelectorAll(AI_ROW_SELECTOR));
+    for (let i = rows.length - 1; i >= 0; i -= 1) {
+      const markdown = rows[i].querySelector('.react-markdown');
+      if (!markdown) continue;
+      const text = (markdown.innerText || '')
+        .replace(/偷看剧本中/g, '')
+        .trim();
       if (text) return text;
     }
     return '';
