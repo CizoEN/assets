@@ -225,12 +225,23 @@
 
     retryDialogActionRunning = true;
     window.setTimeout(() => {
-      if (!getRetryDialog()) {
+      const currentDialog = getRetryDialog();
+      if (!currentDialog) {
+        retryDialogActionRunning = false;
+        return;
+      }
+      const currentRetryButton = Array.from(
+        currentDialog.querySelectorAll('button')
+      ).find(
+        (button) =>
+          (button.textContent || '').trim() === '重说' && isUiVisible(button)
+      );
+      if (!currentRetryButton) {
         retryDialogActionRunning = false;
         return;
       }
       updateStatus('已勾选不再提示');
-      dispatchClick(retryButton);
+      dispatchClick(currentRetryButton);
       window.setTimeout(() => {
         retryDialogActionRunning = false;
       }, 900);
@@ -290,19 +301,22 @@
       label?.closest('.cursor-pointer') ||
       label?.closest('button[role="radio"]') ||
       label?.parentElement;
-    const confirmButton = Array.from(dialog.querySelectorAll('button')).find(
-      (button) =>
-        (button.textContent || '').trim() === '确定' && isUiVisible(button)
-    );
-
     modelSwitchInProgress = true;
     lastModelActionAt = Date.now();
     updateStatus(`正在确认 ${CONFIG.expectedModel}`);
 
     const clickConfirm = () => {
       window.setTimeout(() => {
-        if (getModelDialog() === dialog) {
-          dispatchClick(confirmButton);
+        const currentDialog = getModelDialog();
+        if (currentDialog) {
+          const currentConfirm = Array.from(
+            currentDialog.querySelectorAll('button')
+          ).find(
+            (button) =>
+              (button.textContent || '').trim() === '确定' &&
+              isUiVisible(button)
+          );
+          dispatchClick(currentConfirm);
         }
         window.setTimeout(() => {
           modelSwitchInProgress = false;
