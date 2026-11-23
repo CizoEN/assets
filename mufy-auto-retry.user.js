@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mufy Auto Retry
 // @namespace    local.codex
-// @version      3.7
+// @version      3.8
 // @description  Automatically retries Mufy responses on MUMU-1.5, dismisses the retry prompt, and refreshes after every 10 retries.
 // @match        https://chat.mufy.ai/*
 // @downloadURL  https://raw.githubusercontent.com/CizoEN/assets/main/mufy-auto-retry.user.js
@@ -31,8 +31,8 @@
     maxRetries: 10,
     minGapMinMs: 6500,
     minGapMaxMs: 9500,
-    stopDelayMinMs: 250,
-    stopDelayMaxMs: 450,
+    stopDelayMinMs: 120,
+    stopDelayMaxMs: 220,
     retrySettleMinMs: 900,
     retrySettleMaxMs: 1400,
     replayWaitTimeoutMs: 50000,
@@ -53,7 +53,7 @@
     expectedModel: 'MUMU-1.5',
   };
 
-  const SCRIPT_VERSION = 'v3.7';
+  const SCRIPT_VERSION = 'v3.8';
   const AI_ROW_SELECTOR = '.flex.items-start.px-3.py-2';
   const RETRY_BUTTON_SELECTOR = '#mufy_chat_input_replay_btn';
   const MODEL_BUTTON_SELECTOR = '#mufy_chat_input_model_btn';
@@ -183,6 +183,14 @@
     const row = getLatestAiRow();
     if (!row || seenOutputRows.has(row)) return null;
     return row.querySelector('.react-markdown') ? row : null;
+  }
+
+  function getOutputBodyText(row = getLatestAiRow()) {
+    const markdown = row?.querySelector('.react-markdown');
+    if (!markdown) return '';
+    const content = markdown.cloneNode(true);
+    content.querySelectorAll('.min-pre-stage').forEach((node) => node.remove());
+    return (content.textContent || '').replace(/\s+/g, ' ').trim();
   }
 
   function getLatestAiText() {
@@ -931,19 +939,25 @@
       lastOutputActivityAt = Date.now();
     }
 
-    if (unseenOutputRow) {
+    const outputBodyText = getOutputBodyText(unseenOutputRow);
+    if (unseenOutputRow && outputBodyText) {
       const stopButton = getStopButton();
-      if (!stopButton) return;
+      if (!stopButton && !getRetryButton()) return;
       seenOutputRows.add(unseenOutputRow);
       lastOutputActivityAt = Date.now();
-      updateStatus('检测到输出 div，准备暂停');
-      if (!interruptTimer) {
-        interruptTimer = window.setTimeout(() => {
-          interruptTimer = null;
-          if (!running || retrySequenceRunning) return;
-          if (getStopButton()) beginRetrySequence();
-        }, randomDelay(CONFIG.stopDelayMinMs, CONFIG.stopDelayMaxMs));
+      lastSeenText = text;
+      if (stopButton) {
+        updateStatus('检测到第一个字，准备暂停');
+        if (!interruptTimer) {
+          interruptTimer = window.setTimeout(() => {
+            interruptTimer = null;
+            if (!running || retrySequenceRunning) return;
+            if (getStopButton()) beginRetrySequence();
+          }, randomDelay(CONFIG.stopDelayMinMs, CONFIG.stopDelayMaxMs));
+        }
+        return;
       }
+    } else if (unseenOutputRow) {
       return;
     }
 
