@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mufy Auto Retry
 // @namespace    local.codex
-// @version      3.4
+// @version      3.5
 // @description  Automatically retries Mufy responses on MUMU-1.5, dismisses the retry prompt, and refreshes after every 10 retries.
 // @match        https://chat.mufy.ai/*
 // @downloadURL  https://raw.githubusercontent.com/CizoEN/assets/main/mufy-auto-retry.user.js
@@ -31,8 +31,8 @@
     maxRetries: 10,
     minGapMinMs: 6500,
     minGapMaxMs: 9500,
-    stopDelayMinMs: 900,
-    stopDelayMaxMs: 1500,
+    stopDelayMinMs: 250,
+    stopDelayMaxMs: 450,
     retrySettleMinMs: 900,
     retrySettleMaxMs: 1400,
     replayWaitTimeoutMs: 50000,
@@ -53,7 +53,7 @@
     expectedModel: 'MUMU-1.5',
   };
 
-  const SCRIPT_VERSION = 'v3.4';
+  const SCRIPT_VERSION = 'v3.5';
   const AI_ROW_SELECTOR = '.flex.items-start.px-3.py-2';
   const RETRY_BUTTON_SELECTOR = '#mufy_chat_input_replay_btn';
   const MODEL_BUTTON_SELECTOR = '#mufy_chat_input_model_btn';
@@ -180,15 +180,24 @@
 
   function getRetryButton() {
     const button = document.querySelector(RETRY_BUTTON_SELECTOR);
-    return isUiVisible(button) ? button : null;
+    if (!isUiVisible(button)) return null;
+    return (button.textContent || '').includes('重说') ? button : null;
   }
 
   function getStopButton() {
     const candidates = Array.from(
-      document.querySelectorAll('#mufy_chat_input_box button, #mufy_chat_input_box [role="button"]')
+      document.querySelectorAll('#mufy_chat_input_box *')
     ).filter(
       (element) =>
-        (element.textContent || '').trim() === '停止' && isUiVisible(element)
+        (element.textContent || '').trim() === '停止' &&
+        isUiVisible(element) &&
+        (element.matches('button, [role="button"]') ||
+          getComputedStyle(element).cursor === 'pointer')
+    );
+    candidates.sort(
+      (a, b) =>
+        a.getBoundingClientRect().width * a.getBoundingClientRect().height -
+        b.getBoundingClientRect().width * b.getBoundingClientRect().height
     );
     return candidates[0] || null;
   }
@@ -899,7 +908,6 @@
 
     reloadForStall();
     if (advanceWhenIdle()) return;
-    if (!textAdvanced || Date.now() < nextAllowedAt) return;
 
     const stopButton = getStopButton();
     if (stopButton) {
