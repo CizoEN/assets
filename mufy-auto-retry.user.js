@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mufy Auto Retry
 // @namespace    local.codex
-// @version      1.7
+// @version      1.8
 // @description  Automatically retries Mufy responses on MUMU-1.5, dismisses the retry prompt, and refreshes after every 10 retries.
 // @match        https://chat.mufy.ai/*
 // @downloadURL  https://raw.githubusercontent.com/CizoEN/assets/main/mufy-auto-retry.user.js
@@ -27,6 +27,7 @@
     expectedModel: 'MUMU-1.5',
   };
 
+  const SCRIPT_VERSION = 'v1.8';
   const AI_ROW_SELECTOR = '.flex.items-start.px-3.py-2';
   const RETRY_BUTTON_SELECTOR = '#mufy_chat_input_replay_btn';
   const MODEL_BUTTON_SELECTOR = '#mufy_chat_input_model_btn';
@@ -92,7 +93,7 @@
 
   const status = document.createElement('span');
   status.style.cssText = 'min-width: 96px; color: rgba(255,255,255,.76);';
-  status.textContent = `0 / ${displayMaxRetries()}`;
+  status.textContent = `${SCRIPT_VERSION} · 0 / ${displayMaxRetries()}`;
 
   panel.append(toggleButton, status);
   document.documentElement.appendChild(panel);
@@ -242,8 +243,10 @@
   }
 
   function updateStatus(extra = '') {
-    status.textContent = `${retries} / ${displayMaxRetries()}${extra ? ` · ${extra}` : ''}`;
-    toggleButton.textContent = running ? '停止自动重说' : '启动自动重说';
+    status.textContent = `${SCRIPT_VERSION} · ${retries} / ${displayMaxRetries()}${extra ? ` · ${extra}` : ''}`;
+    toggleButton.textContent = running
+      ? `停止自动重说 ${SCRIPT_VERSION}`
+      : `启动自动重说 ${SCRIPT_VERSION}`;
     toggleButton.style.background = running ? '#a33d4b' : '#6959d7';
   }
 
