@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mufy Auto Retry
 // @namespace    local.codex
-// @version      3.0
+// @version      3.1
 // @description  Automatically retries Mufy responses on MUMU-1.5, dismisses the retry prompt, and refreshes after every 10 retries.
 // @match        https://chat.mufy.ai/*
 // @downloadURL  https://raw.githubusercontent.com/CizoEN/assets/main/mufy-auto-retry.user.js
@@ -29,18 +29,25 @@
 
   const CONFIG = {
     maxRetries: 10,
-    minGapMinMs: 3200,
-    minGapMaxMs: 5200,
-    stopDelayMinMs: 550,
-    stopDelayMaxMs: 900,
+    minGapMinMs: 6500,
+    minGapMaxMs: 9500,
+    stopDelayMinMs: 900,
+    stopDelayMaxMs: 1500,
+    retrySettleMinMs: 900,
+    retrySettleMaxMs: 1400,
+    modelActionDelayMs: 320,
+    idleRetryGraceMs: 2600,
+    idleSeedDelayMs: 9000,
+    emptySeedDelayMs: 3200,
+    retryDialogSettleMs: 180,
     stallTimeoutMs: 120000,
-    resumeDelayMs: 2200,
-    mutationDebounceMs: 80,
-    fallbackPollMs: 250,
+    resumeDelayMs: 3000,
+    mutationDebounceMs: 140,
+    fallbackPollMs: 350,
     expectedModel: 'MUMU-1.5',
   };
 
-  const SCRIPT_VERSION = 'v3.0';
+  const SCRIPT_VERSION = 'v3.1';
   const AI_ROW_SELECTOR = '.flex.items-start.px-3.py-2';
   const RETRY_BUTTON_SELECTOR = '#mufy_chat_input_replay_btn';
   const MODEL_BUTTON_SELECTOR = '#mufy_chat_input_model_btn';
@@ -55,9 +62,13 @@
   let lastOutputActivityAt = 0;
   let nextAllowedAt = 0;
   let lastConflictClickAt = 0;
+  let lastModelActionAt = 0;
+  let lastCycleActionAt = 0;
   let retrySequenceRunning = false;
+  let retryDialogActionRunning = false;
   let modelSwitchInProgress = false;
   let seedInProgress = false;
+  let cycleSeedAttempts = 0;
   let userStopped = false;
   let mutationTimer = null;
   let pollTimer = null;
@@ -119,6 +130,30 @@
   panel.append(toggleButton, status);
   document.documentElement.appendChild(panel);
 
+  function isUiVisible(element) {
+    if (!element) return false;
+    const style = getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return (
+      style.display !== 'none' &&
+      style.visibility !== 'hidden' &&
+      style.pointerEvents !== 'none' &&
+      rect.width > 0 &&
+      rect.height > 0
+    );
+  }
+
+  function dispatchClick(element) {
+    if (!element) return;
+    element.dispatchEvent(
+      new MouseEvent('click', {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+      })
+    );
+  }
+
   function getLatestAiText() {
     const rows = Array.from(document.querySelectorAll(AI_ROW_SELECTOR));
     for (let i = rows.length - 1; i >= 0; i -= 1) {
@@ -134,80 +169,81 @@
 
   function getRetryButton() {
     const button = document.querySelector(RETRY_BUTTON_SELECTOR);
-    if (!button) return null;
-
-    const style = getComputedStyle(button);
-    const rect = button.getBoundingClientRect();
-    if (
-      style.display === 'none' ||
-      style.visibility === 'hidden' ||
-      style.pointerEvents === 'none' ||
-      rect.width <= 0 ||
-      rect.height <= 0
-    ) {
-      return null;
-    }
-
-    return button;
+    return isUiVisible(button) ? button : null;
   }
 
   function getStopButton() {
+    const candidates = Array.from(
+      document.querySelectorAll('#mufy_chat_input_box button, #mufy_chat_input_box [role="button"]')
+    ).filter(
+      (element) =>
+        (element.textContent || '').trim() === '停止' && isUiVisible(element)
+    );
+    return candidates[0] || null;
+  }
+
+  function getRetryDialog() {
     return (
-      Array.from(
-        document.querySelectorAll('#mufy_chat_input_box button, #mufy_chat_input_box div')
-      ).find((element) => {
-        if ((element.textContent || '').trim() !== '停止') return false;
-        const style = getComputedStyle(element);
-        const rect = element.getBoundingClientRect();
-        return (
-          style.display !== 'none' &&
-          style.visibility !== 'hidden' &&
-          style.pointerEvents !== 'none' &&
-          rect.width > 0 &&
-          rect.height > 0
-        );
+      Array.from(document.querySelectorAll('[role="dialog"]')).find((dialog) => {
+        if (!isUiVisible(dialog)) return false;
+        const text = (dialog.textContent || '').replace(/\s+/g, '');
+        return text.includes('是否进行重说') && text.includes('取消');
+      }) || null
+    );
+  }
+
+  function getModelDialog() {
+    return (
+      Array.from(document.querySelectorAll('[role="dialog"]')).find((dialog) => {
+        if (!isUiVisible(dialog)) return false;
+        return (dialog.textContent || '').includes('模型选择');
       }) || null
     );
   }
 
   function confirmRetryDialog() {
-    const dialogs = Array.from(document.querySelectorAll('[role="dialog"]'));
-    const dialog = dialogs.find((item) => {
-      const text = (item.textContent || '').replace(/\s+/g, '');
-      return text.includes('是否进行重说') && text.includes('取消');
-    });
+    const dialog = getRetryDialog();
     if (!dialog) return false;
+    if (retryDialogActionRunning) return true;
 
     const checkbox = dialog.querySelector(
       '[role="checkbox"], input[type="checkbox"]'
     );
-    if (checkbox && checkbox.getAttribute('aria-checked') !== 'true') {
-      checkbox.click();
+    const checkboxChecked =
+      checkbox instanceof HTMLInputElement
+        ? checkbox.checked
+        : checkbox?.getAttribute('aria-checked') === 'true';
+    if (checkbox && !checkboxChecked) {
+      dispatchClick(checkbox);
     }
 
     const retryButton = Array.from(dialog.querySelectorAll('button')).find(
-      (button) => (button.textContent || '').trim() === '重说'
+      (button) =>
+        (button.textContent || '').trim() === '重说' && isUiVisible(button)
     );
     if (!retryButton) return false;
 
-    window.setTimeout(() => retryButton.click(), 40);
+    retryDialogActionRunning = true;
+    window.setTimeout(() => {
+      if (!getRetryDialog()) {
+        retryDialogActionRunning = false;
+        return;
+      }
+      updateStatus('已勾选不再提示');
+      dispatchClick(retryButton);
+      window.setTimeout(() => {
+        retryDialogActionRunning = false;
+      }, 900);
+    }, CONFIG.retryDialogSettleMs);
     return true;
   }
 
   function confirmSessionConflict() {
     const candidates = Array.from(
-      document.querySelectorAll('button, [role="button"], div')
+      document.querySelectorAll('button, [role="button"]')
     ).filter((element) => {
       if ((element.textContent || '').trim() !== '终止冲突对话') return false;
-      const style = getComputedStyle(element);
-      const rect = element.getBoundingClientRect();
-      return (
-        style.display !== 'none' &&
-        style.visibility !== 'hidden' &&
-        style.pointerEvents !== 'none' &&
-        rect.width > 0 &&
-        rect.height > 0
-      );
+      return isUiVisible(element);
     });
 
     if (!candidates.length) return false;
@@ -219,7 +255,7 @@
         b.getBoundingClientRect().width * b.getBoundingClientRect().height
     )[0];
     lastConflictClickAt = Date.now();
-    button.click();
+    dispatchClick(button);
     lastOutputActivityAt = Date.now();
     expectingOutput = true;
     return true;
@@ -236,70 +272,99 @@
     );
   }
 
-  function selectExpectedModel() {
-    if (modelSwitchInProgress || isExpectedModel()) return;
+  function finishModelDialog(dialog) {
+    if (modelSwitchInProgress) return true;
+    const label = Array.from(dialog.querySelectorAll('span')).find(
+      (span) =>
+        (span.textContent || '').trim() === CONFIG.expectedModel &&
+        isUiVisible(span)
+    );
+    const selectedRadio = Array.from(
+      dialog.querySelectorAll('button[role="radio"][aria-checked="true"]')
+    ).find(isUiVisible);
+    const selectedCard = selectedRadio?.closest('.cursor-pointer');
+    const alreadySelected = Boolean(
+      label && selectedCard && selectedCard.contains(label)
+    );
+    const option =
+      label?.closest('.cursor-pointer') ||
+      label?.closest('button[role="radio"]') ||
+      label?.parentElement;
+    const confirmButton = Array.from(dialog.querySelectorAll('button')).find(
+      (button) =>
+        (button.textContent || '').trim() === '确定' && isUiVisible(button)
+    );
+
     modelSwitchInProgress = true;
-    updateStatus(`正在切换 ${CONFIG.expectedModel}`);
+    lastModelActionAt = Date.now();
+    updateStatus(`正在确认 ${CONFIG.expectedModel}`);
+
+    const clickConfirm = () => {
+      window.setTimeout(() => {
+        if (getModelDialog() === dialog) {
+          dispatchClick(confirmButton);
+        }
+        window.setTimeout(() => {
+          modelSwitchInProgress = false;
+          updateStatus(
+            isExpectedModel()
+              ? `已锁定 ${CONFIG.expectedModel}`
+              : `确认 ${CONFIG.expectedModel} 失败`
+          );
+        }, 700);
+      }, CONFIG.modelActionDelayMs);
+    };
+
+    if (alreadySelected || !option) {
+      clickConfirm();
+      return true;
+    }
+
+    dispatchClick(option);
+    window.setTimeout(clickConfirm, CONFIG.modelActionDelayMs);
+    return true;
+  }
+
+  function selectExpectedModel() {
+    if (modelSwitchInProgress) return;
+
+    const openDialog = getModelDialog();
+    if (openDialog) {
+      finishModelDialog(openDialog);
+      return;
+    }
+    if (isExpectedModel()) return;
+    if (Date.now() - lastModelActionAt < 900) return;
 
     const modelButton = document.querySelector(MODEL_BUTTON_SELECTOR);
     if (!modelButton) {
-      modelSwitchInProgress = false;
       updateStatus('未找到模型按钮');
       return;
     }
 
-    modelButton.click();
-    let attempts = 0;
-    const chooseOption = () => {
-      attempts += 1;
-      const label = Array.from(document.querySelectorAll('span')).find(
-        (span) => (span.textContent || '').trim() === CONFIG.expectedModel
-      );
-      const option = label?.closest('.cursor-pointer');
+    modelSwitchInProgress = true;
+    lastModelActionAt = Date.now();
+    updateStatus(`正在打开 ${CONFIG.expectedModel}`);
+    dispatchClick(modelButton);
 
-      if (!option) {
-        if (attempts < 30) {
-          window.setTimeout(chooseOption, 100);
-        } else {
-          modelSwitchInProgress = false;
-          updateStatus(`未找到 ${CONFIG.expectedModel}`);
-        }
+    let attempts = 0;
+    const waitForDialog = () => {
+      attempts += 1;
+      const dialog = getModelDialog();
+      if (dialog) {
+        modelSwitchInProgress = false;
+        finishModelDialog(dialog);
         return;
       }
-
-      option.click();
-      window.setTimeout(() => {
-        const radio = Array.from(
-          document.querySelectorAll('button[role="radio"]')
-        ).find((element) => {
-          const rect = element.getBoundingClientRect();
-          return rect.width > 0 && rect.height > 0;
-        });
-        radio?.click();
-
-        window.setTimeout(() => {
-          const confirm = Array.from(
-            document.querySelectorAll('button')
-          ).find(
-            (element) =>
-              (element.textContent || '').trim() === '确定' &&
-              element.getBoundingClientRect().width > 0
-          );
-          confirm?.click();
-
-          window.setTimeout(() => {
-            modelSwitchInProgress = false;
-            updateStatus(
-              isExpectedModel()
-                ? `已切换 ${CONFIG.expectedModel}`
-                : `切换 ${CONFIG.expectedModel} 失败`
-            );
-          }, 350);
-        }, 80);
-      }, 100);
+      if (attempts < 24) {
+        window.setTimeout(waitForDialog, 220);
+        return;
+      }
+      modelSwitchInProgress = false;
+      updateStatus('模型菜单未打开');
     };
 
-    window.setTimeout(chooseOption, 100);
+    window.setTimeout(waitForDialog, 260);
   }
 
   function getUserMessageCount() {
@@ -341,6 +406,8 @@
     running = false;
     expectingOutput = false;
     nextAllowedAt = 0;
+    retrySequenceRunning = false;
+    retryDialogActionRunning = false;
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = null;
     if (interruptTimer) clearTimeout(interruptTimer);
@@ -370,7 +437,9 @@
     }
     nextAllowedAt = 0;
     expectingOutput = false;
-    lastOutputActivityAt = 0;
+    lastOutputActivityAt = Date.now();
+    lastCycleActionAt = Date.now();
+    cycleSeedAttempts = 0;
     lastSeenText = getLatestAiText();
     lastUserMessageCount = getUserMessageCount();
     updateStatus('等待新输出');
@@ -378,68 +447,75 @@
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = setInterval(scan, CONFIG.fallbackPollMs);
 
-    if (!lastSeenText) {
-      window.setTimeout(() => {
-        if (
-          running &&
-          !getLatestAiText() &&
-          !getRetryButton() &&
-          !getStopButton()
-        ) {
-          sendOneFallback();
-        }
-      }, 3000);
-    }
-
     if (options.afterRefresh) {
-      expectingOutput = true;
       lastOutputActivityAt = Date.now();
       updateStatus('刷新后恢复');
 
-      window.setTimeout(() => {
-        if (!running || !isExpectedModel()) return;
-        const button = getRetryButton();
-        if (button) {
-          clickRetry(button);
-        } else {
-          lastOutputActivityAt = Date.now();
-          updateStatus('等待重说按钮');
+      let attempts = 0;
+      const waitForInitialRetry = () => {
+        if (!running) return;
+        if (!isExpectedModel()) {
+          selectExpectedModel();
+          window.setTimeout(waitForInitialRetry, CONFIG.resumeDelayMs);
+          return;
         }
-      }, CONFIG.resumeDelayMs);
+        const button = getRetryButton();
+        if (button && !getStopButton()) {
+          clickRetry(button);
+          return;
+        }
+        attempts += 1;
+        if (getStopButton() || attempts >= 4) {
+          updateStatus('等待新输出');
+          return;
+        }
+        updateStatus('等待重说按钮');
+        window.setTimeout(waitForInitialRetry, CONFIG.resumeDelayMs);
+      };
+      window.setTimeout(waitForInitialRetry, CONFIG.resumeDelayMs);
     }
   }
 
   function clickRetry(button) {
+    if (!button || !isUiVisible(button)) return false;
     retries += 1;
     nextAllowedAt = Date.now() + randomDelay(
       CONFIG.minGapMinMs,
       CONFIG.minGapMaxMs
     );
+    lastCycleActionAt = Date.now();
+    cycleSeedAttempts = 0;
     lastSeenText = getLatestAiText();
     expectingOutput = true;
     lastOutputActivityAt = Date.now();
     saveResumeState();
 
     // Mufy's control is a div, so use a real click event for React's delegated handler.
-    button.dispatchEvent(
-      new MouseEvent('click', {
-        bubbles: true,
-        cancelable: true,
-        view: window,
-      })
-    );
+    dispatchClick(button);
 
     if (retries >= CONFIG.maxRetries) {
-      window.setTimeout(() => {
-        if (!confirmRetryDialog()) {
-          refreshAfterCycle();
-        } else {
-          window.setTimeout(refreshAfterCycle, 1800);
+      updateStatus('第 10 次已提交，准备刷新');
+      let attempts = 0;
+      const finishLastCycle = () => {
+        attempts += 1;
+        if (confirmRetryDialog()) {
+          window.setTimeout(refreshAfterCycle, 4200);
+          return;
         }
-      }, 120);
+        const outputStarted =
+          Boolean(getStopButton()) ||
+          Boolean(getLatestAiText() && getLatestAiText() !== lastSeenText);
+        if (outputStarted || attempts >= 16) {
+          window.setTimeout(refreshAfterCycle, 4200);
+          return;
+        }
+        window.setTimeout(finishLastCycle, 350);
+      };
+      window.setTimeout(finishLastCycle, 500);
     } else {
       updateStatus('等待下一次输出');
     }
+    return true;
   }
 
   function beginRetrySequence() {
@@ -451,10 +527,11 @@
       retrySequenceRunning = false;
       return;
     }
-    stopButton.click();
+    dispatchClick(stopButton);
     updateStatus('检测到输出，正在停止');
 
     let attempts = 0;
+    let stableReplayChecks = 0;
     const waitForReplay = () => {
       if (!running) {
         retrySequenceRunning = false;
@@ -463,26 +540,44 @@
 
       if (confirmSessionConflict()) {
         updateStatus('已终止冲突对话');
+        window.setTimeout(waitForReplay, 450);
+        return;
       }
-      confirmRetryDialog();
+      if (confirmRetryDialog()) {
+        window.setTimeout(waitForReplay, 450);
+        return;
+      }
 
+      const stop = getStopButton();
       const retryButton = getRetryButton();
-      if (retryButton) {
+      stableReplayChecks =
+        !stop && retryButton ? stableReplayChecks + 1 : 0;
+
+      if (
+        !stop &&
+        retryButton &&
+        stableReplayChecks >= 2 &&
+        Date.now() >= nextAllowedAt
+      ) {
         retrySequenceRunning = false;
         clickRetry(retryButton);
         return;
       }
 
       attempts += 1;
-      if (attempts < 50) {
-        window.setTimeout(waitForReplay, 100);
+      if (attempts < 45) {
+        window.setTimeout(waitForReplay, 350);
       } else {
         retrySequenceRunning = false;
-        sendOneFallback();
+        lastCycleActionAt = Date.now();
+        updateStatus('等待重说按钮超时，准备补发');
       }
     };
 
-    window.setTimeout(waitForReplay, 80);
+    window.setTimeout(
+      waitForReplay,
+      randomDelay(CONFIG.retrySettleMinMs, CONFIG.retrySettleMaxMs)
+    );
   }
 
   function sendOneFallback() {
@@ -495,6 +590,7 @@
     }
 
     seedInProgress = true;
+    lastCycleActionAt = Date.now();
     updateStatus('没有输出，发送 1');
 
     const valueSetter = Object.getOwnPropertyDescriptor(
@@ -524,10 +620,11 @@
       );
 
       if (sendButton) {
-        sendButton.click();
+        dispatchClick(sendButton);
         seedInProgress = false;
         expectingOutput = true;
         lastOutputActivityAt = Date.now();
+        lastCycleActionAt = Date.now();
         lastUserMessageCount = getUserMessageCount();
         return;
       }
@@ -575,8 +672,41 @@
     window.location.reload();
   }
 
+  function advanceWhenIdle() {
+    if (
+      retrySequenceRunning ||
+      seedInProgress ||
+      modelSwitchInProgress ||
+      getStopButton() ||
+      getRetryDialog() ||
+      getModelDialog()
+    ) {
+      return false;
+    }
+
+    const idleFor = Date.now() - lastCycleActionAt;
+    const retryButton = getRetryButton();
+    if (retryButton && idleFor >= CONFIG.idleRetryGraceMs) {
+      updateStatus('已找到重说按钮');
+      clickRetry(retryButton);
+      return true;
+    }
+
+    if (
+      !retryButton &&
+      cycleSeedAttempts < 1 &&
+      idleFor >=
+        (lastSeenText ? CONFIG.idleSeedDelayMs : CONFIG.emptySeedDelayMs)
+    ) {
+      cycleSeedAttempts += 1;
+      sendOneFallback();
+      return true;
+    }
+    return false;
+  }
+
   function scan() {
-    if (!running || document.hidden || userIsTyping()) return;
+    if (!running || userIsTyping()) return;
 
     if (confirmSessionConflict()) {
       updateStatus('已终止冲突对话');
@@ -589,6 +719,12 @@
     }
 
     if (retrySequenceRunning) return;
+
+    const modelDialog = getModelDialog();
+    if (modelDialog) {
+      finishModelDialog(modelDialog);
+      return;
+    }
 
     if (!isExpectedModel()) {
       selectExpectedModel();
@@ -612,6 +748,7 @@
     }
 
     reloadForStall();
+    if (advanceWhenIdle()) return;
     if (!textAdvanced || Date.now() < nextAllowedAt) return;
 
     const stopButton = getStopButton();
@@ -693,23 +830,37 @@
 
   // Keep trying until Mufy has restored its model UI and the watcher is running.
   window.setInterval(() => {
-    if (running || userStopped || modelSwitchInProgress) return;
+    if (userStopped || modelSwitchInProgress) return;
     if (!document.querySelector(MODEL_BUTTON_SELECTOR)) return;
+
+    const modelDialog = getModelDialog();
+    if (modelDialog) {
+      finishModelDialog(modelDialog);
+      return;
+    }
+    if (running) return;
 
     if (isExpectedModel()) {
       start();
     } else {
       selectExpectedModel();
     }
-  }, 700);
+  }, 1100);
 
   window.mufyAutoRetry = {
     start,
     stop,
     status: () => ({
+      version: SCRIPT_VERSION,
       running,
       retries,
       maxRetries: displayMaxRetries(),
+      model: getModelName(),
+      expectedModel: CONFIG.expectedModel,
+      hasStop: Boolean(getStopButton()),
+      hasRetry: Boolean(getRetryButton()),
+      hasRetryDialog: Boolean(getRetryDialog()),
+      hasModelDialog: Boolean(getModelDialog()),
       latestText: getLatestAiText(),
     }),
   };
