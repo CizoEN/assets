@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mufy Auto Retry
 // @namespace    local.codex
-// @version      3.1
+// @version      3.2
 // @description  Automatically retries Mufy responses on MUMU-1.5, dismisses the retry prompt, and refreshes after every 10 retries.
 // @match        https://chat.mufy.ai/*
 // @downloadURL  https://raw.githubusercontent.com/CizoEN/assets/main/mufy-auto-retry.user.js
@@ -35,7 +35,11 @@
     stopDelayMaxMs: 1500,
     retrySettleMinMs: 900,
     retrySettleMaxMs: 1400,
-    modelActionDelayMs: 320,
+    modelActionDelayMs: 650,
+    modelSelectionSettleMs: 900,
+    modelCommitTimeoutMs: 12000,
+    modelFailureCooldownMs: 30000,
+    verifyModelPollMs: 250,
     idleRetryGraceMs: 2600,
     idleSeedDelayMs: 9000,
     emptySeedDelayMs: 3200,
@@ -47,7 +51,7 @@
     expectedModel: 'MUMU-1.5',
   };
 
-  const SCRIPT_VERSION = 'v3.1';
+  const SCRIPT_VERSION = 'v3.2';
   const AI_ROW_SELECTOR = '.flex.items-start.px-3.py-2';
   const RETRY_BUTTON_SELECTOR = '#mufy_chat_input_replay_btn';
   const MODEL_BUTTON_SELECTOR = '#mufy_chat_input_model_btn';
@@ -63,6 +67,7 @@
   let nextAllowedAt = 0;
   let lastConflictClickAt = 0;
   let lastModelActionAt = 0;
+  let lastModelFailureAt = 0;
   let lastCycleActionAt = 0;
   let retrySequenceRunning = false;
   let retryDialogActionRunning = false;
@@ -283,6 +288,51 @@
     );
   }
 
+  function getModelDialogSelection(dialog) {
+    const candidates = Array.from(dialog.querySelectorAll('div')).filter(
+      (element) => {
+        const text = (element.textContent || '').replace(/\s+/g, ' ').trim();
+        return (
+          isUiVisible(element) &&
+          text.startsWith('已选择') &&
+          !element.querySelector('button')
+        );
+      }
+    );
+    candidates.sort((a, b) => a.children.length - b.children.length);
+    return (candidates[0]?.textContent || '').replace(/\s+/g, ' ').trim();
+  }
+
+  function getModelConfirmButton(dialog) {
+    return (
+      Array.from(dialog.querySelectorAll('button')).find(
+        (button) =>
+          (button.textContent || '').trim() === '确定' && isUiVisible(button)
+      ) || null
+    );
+  }
+
+  function failModelSwitch(reason) {
+    modelSwitchInProgress = false;
+    lastModelFailureAt = Date.now();
+    const dialog = getModelDialog();
+    const cancelButton = dialog
+      ? Array.from(dialog.querySelectorAll('button')).find(
+          (button) =>
+            (button.textContent || '').trim() === '取消' && isUiVisible(button)
+        )
+      : null;
+    dispatchClick(cancelButton);
+    updateStatus(`${reason}，稍后重试`);
+  }
+
+  function isModelFailureCoolingDown() {
+    return Boolean(
+      lastModelFailureAt &&
+        Date.now() - lastModelFailureAt < CONFIG.modelFailureCooldownMs
+    );
+  }
+
   function finishModelDialog(dialog) {
     if (modelSwitchInProgress) return true;
     const label = Array.from(dialog.querySelectorAll('span')).find(
@@ -290,63 +340,104 @@
         (span.textContent || '').trim() === CONFIG.expectedModel &&
         isUiVisible(span)
     );
-    const selectedRadio = Array.from(
-      dialog.querySelectorAll('button[role="radio"][aria-checked="true"]')
-    ).find(isUiVisible);
-    const selectedCard = selectedRadio?.closest('.cursor-pointer');
-    const alreadySelected = Boolean(
-      label && selectedCard && selectedCard.contains(label)
-    );
+    const selectedText = getModelDialogSelection(dialog);
+    const alreadySelected = selectedText.includes(CONFIG.expectedModel);
     const option =
       label?.closest('.cursor-pointer') ||
       label?.closest('button[role="radio"]') ||
       label?.parentElement;
+
     modelSwitchInProgress = true;
     lastModelActionAt = Date.now();
-    updateStatus(`正在确认 ${CONFIG.expectedModel}`);
 
-    const clickConfirm = () => {
-      window.setTimeout(() => {
-        const currentDialog = getModelDialog();
-        if (currentDialog) {
-          const currentConfirm = Array.from(
-            currentDialog.querySelectorAll('button')
-          ).find(
-            (button) =>
-              (button.textContent || '').trim() === '确定' &&
-              isUiVisible(button)
-          );
-          dispatchClick(currentConfirm);
-        }
-        window.setTimeout(() => {
+    if (!alreadySelected && !option) {
+      failModelSwitch(`未找到 ${CONFIG.expectedModel}`);
+      return true;
+    }
+
+    const verifyCommit = () => {
+      let attempts = 0;
+      const maxAttempts = Math.ceil(
+        CONFIG.modelCommitTimeoutMs / CONFIG.verifyModelPollMs
+      );
+      const verify = () => {
+        attempts += 1;
+        if (isExpectedModel()) {
+          const staleDialog = getModelDialog();
+          if (staleDialog) {
+            const cancelButton = Array.from(
+              staleDialog.querySelectorAll('button')
+            ).find(
+              (button) =>
+                (button.textContent || '').trim() === '取消' &&
+                isUiVisible(button)
+            );
+            dispatchClick(cancelButton);
+          }
           modelSwitchInProgress = false;
-          updateStatus(
-            isExpectedModel()
-              ? `已锁定 ${CONFIG.expectedModel}`
-              : `确认 ${CONFIG.expectedModel} 失败`
-          );
-        }, 700);
-      }, CONFIG.modelActionDelayMs);
+          lastModelFailureAt = 0;
+          updateStatus(`已锁定 ${CONFIG.expectedModel}`);
+          return;
+        }
+        if (attempts < maxAttempts) {
+          window.setTimeout(verify, CONFIG.verifyModelPollMs);
+          return;
+        }
+        failModelSwitch(`确认 ${CONFIG.expectedModel} 超时`);
+      };
+      window.setTimeout(verify, CONFIG.verifyModelPollMs);
     };
 
-    if (!alreadySelected && !option && !isExpectedModel()) {
-      modelSwitchInProgress = false;
-      updateStatus(`未找到 ${CONFIG.expectedModel}`);
+    const clickConfirm = () => {
+      const currentDialog = getModelDialog();
+      const currentConfirm = currentDialog
+        ? getModelConfirmButton(currentDialog)
+        : null;
+      if (!currentDialog || !currentConfirm) {
+        failModelSwitch('模型确认按钮丢失');
+        return;
+      }
+      lastModelActionAt = Date.now();
+      updateStatus(`已提交 ${CONFIG.expectedModel}，等待切换`);
+      dispatchClick(currentConfirm);
+      verifyCommit();
+    };
+
+    if (alreadySelected) {
+      updateStatus(`已选中 ${CONFIG.expectedModel}，等待确认`);
+      window.setTimeout(clickConfirm, CONFIG.modelSelectionSettleMs);
       return true;
     }
 
-    if (alreadySelected || !option) {
-      clickConfirm();
-      return true;
-    }
-
+    updateStatus(`正在选择 ${CONFIG.expectedModel}`);
     dispatchClick(option);
-    window.setTimeout(clickConfirm, CONFIG.modelActionDelayMs);
+    let selectionAttempts = 0;
+    const waitForSelection = () => {
+      selectionAttempts += 1;
+      const currentDialog = getModelDialog();
+      if (!currentDialog) {
+        failModelSwitch('模型菜单意外关闭');
+        return;
+      }
+      if (
+        getModelDialogSelection(currentDialog).includes(CONFIG.expectedModel)
+      ) {
+        window.setTimeout(clickConfirm, CONFIG.modelSelectionSettleMs);
+        return;
+      }
+      if (selectionAttempts < 20) {
+        window.setTimeout(waitForSelection, 250);
+        return;
+      }
+      failModelSwitch(`选择 ${CONFIG.expectedModel} 超时`);
+    };
+    window.setTimeout(waitForSelection, 250);
     return true;
   }
 
   function selectExpectedModel() {
     if (modelSwitchInProgress) return;
+    if (isModelFailureCoolingDown()) return;
 
     const openDialog = getModelDialog();
     if (openDialog) {
@@ -380,8 +471,7 @@
         window.setTimeout(waitForDialog, 220);
         return;
       }
-      modelSwitchInProgress = false;
-      updateStatus('模型菜单未打开');
+      failModelSwitch('模型菜单未打开');
     };
 
     window.setTimeout(waitForDialog, 260);
@@ -742,7 +832,7 @@
 
     const modelDialog = getModelDialog();
     if (modelDialog) {
-      finishModelDialog(modelDialog);
+      if (!isModelFailureCoolingDown()) finishModelDialog(modelDialog);
       return;
     }
 
@@ -855,10 +945,11 @@
 
     const modelDialog = getModelDialog();
     if (modelDialog) {
-      finishModelDialog(modelDialog);
+      if (!isModelFailureCoolingDown()) finishModelDialog(modelDialog);
       return;
     }
     if (running) return;
+    if (isModelFailureCoolingDown()) return;
 
     if (isExpectedModel()) {
       start();
