@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mufy Auto Retry
 // @namespace    local.codex
-// @version      3.9.5
+// @version      3.9.6
 // @description  Automatically retries Mufy responses on MUMU-1.5, dismisses the retry prompt, and refreshes after every 10 retries.
 // @match        https://chat.mufy.ai/*
 // @downloadURL  https://raw.githubusercontent.com/CizoEN/assets/main/mufy-auto-retry.user.js
@@ -60,7 +60,7 @@
     expectedModel: 'MUMU-1.5',
   };
 
-  const SCRIPT_VERSION = 'v3.9.5';
+  const SCRIPT_VERSION = 'v3.9.6';
   const AUTO_STOP_AT = new Date('2026-11-24T07:55:00+08:00').getTime();
   const AI_ROW_SELECTOR = '.flex.items-start.px-3.py-2';
   const RETRY_BUTTON_SELECTOR = '#mufy_chat_input_replay_btn';
@@ -186,6 +186,11 @@
   function pressSendButton(element) {
     if (!element) return;
     const rect = element.getBoundingClientRect();
+    const hitTarget =
+      document.elementFromPoint(
+        rect.left + rect.width / 2,
+        rect.top + rect.height / 2
+      ) || element;
     const options = {
       bubbles: true,
       cancelable: true,
@@ -195,12 +200,12 @@
       clientY: rect.top + rect.height / 2,
       button: 0,
     };
-    element.focus?.();
-    element.dispatchEvent(new PointerEvent('pointerdown', options));
-    element.dispatchEvent(new MouseEvent('mousedown', options));
-    element.dispatchEvent(new PointerEvent('pointerup', options));
-    element.dispatchEvent(new MouseEvent('mouseup', options));
-    element.click();
+    hitTarget.focus?.();
+    hitTarget.dispatchEvent(new PointerEvent('pointerdown', options));
+    hitTarget.dispatchEvent(new MouseEvent('mousedown', options));
+    hitTarget.dispatchEvent(new PointerEvent('pointerup', options));
+    hitTarget.dispatchEvent(new MouseEvent('mouseup', options));
+    hitTarget.dispatchEvent(new MouseEvent('click', options));
   }
 
   function getAiRows() {
