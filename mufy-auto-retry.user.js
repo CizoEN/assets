@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mufy Auto Retry
 // @namespace    local.codex
-// @version      4.4
+// @version      4.5
 // @description  Automatically retries Mufy responses on MUMU-1.5, dismisses the retry prompt, and refreshes after every 10 retries.
 // @match        https://chat.mufy.ai/*
 // @downloadURL  https://raw.githubusercontent.com/CizoEN/assets/main/mufy-auto-retry.user.js
@@ -30,10 +30,8 @@
   const CONFIG = {
     maxRetries: 10,
     minGapMinMs: 0,
-    minGapMaxMs: 50,
-    stopDelayMinMs: 80,
-    stopDelayMaxMs: 160,
-    retryAfterGoldMs: 500,
+    minGapMaxMs: 30,
+    retryAfterPauseMs: 1000,
     retrySettleMinMs: 50,
     retrySettleMaxMs: 100,
     replayWaitTimeoutMs: 50000,
@@ -49,12 +47,12 @@
     rateLimitRefreshDelayMs: 1500,
     stallTimeoutMs: 120000,
     resumeDelayMs: 250,
-    mutationDebounceMs: 140,
-    fallbackPollMs: 350,
+    mutationDebounceMs: 50,
+    fallbackPollMs: 100,
     expectedModel: 'MUMU-1.5',
   };
 
-  const SCRIPT_VERSION = 'v4.4';
+  const SCRIPT_VERSION = 'v4.5';
   const AUTO_STOP_AT = new Date('2026-11-24T07:55:00+08:00').getTime();
   const AI_ROW_SELECTOR = '.flex.items-start.px-3.py-2';
   const RETRY_BUTTON_SELECTOR = '#mufy_chat_input_replay_btn';
@@ -87,7 +85,6 @@
   let userStopped = false;
   let mutationTimer = null;
   let pollTimer = null;
-  let interruptTimer = null;
   let seenOutputRows = new WeakSet();
   let autoStopHandled = false;
 
@@ -566,8 +563,6 @@
     retryDialogActionRunning = false;
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = null;
-    if (interruptTimer) clearTimeout(interruptTimer);
-    interruptTimer = null;
     if (reason !== '自动刷新中') clearResumeState();
     updateStatus(reason);
   }
@@ -650,10 +645,6 @@
 
   function clickRetry(button) {
     if (!button || !isUiVisible(button)) return false;
-    if (interruptTimer) {
-      clearTimeout(interruptTimer);
-      interruptTimer = null;
-    }
     retries += 1;
     nextAllowedAt = Date.now() + randomDelay(
       CONFIG.minGapMinMs,
@@ -704,11 +695,12 @@
       retrySequenceRunning = false;
       return;
     }
+    retryEarliestAt = Date.now() + CONFIG.retryAfterPauseMs;
     dispatchClick(stopButton);
-    updateStatus('检测到输出，正在停止');
+    updateStatus('金色线出现，已立即暂停');
 
     let attempts = 0;
-    const maxReplayChecks = Math.ceil(CONFIG.replayWaitTimeoutMs / 250);
+    const maxReplayChecks = Math.ceil(CONFIG.replayWaitTimeoutMs / 100);
     const waitForReplay = () => {
       if (!running) {
         retrySequenceRunning = false;
@@ -717,11 +709,11 @@
 
       if (confirmSessionConflict()) {
         updateStatus('已终止冲突对话');
-        window.setTimeout(waitForReplay, 250);
+        window.setTimeout(waitForReplay, 100);
         return;
       }
       if (confirmRetryDialog()) {
-        window.setTimeout(waitForReplay, 250);
+        window.setTimeout(waitForReplay, 100);
         return;
       }
 
@@ -741,10 +733,10 @@
 
       attempts += 1;
       if (attempts < maxReplayChecks) {
-        if (attempts === 8) {
-          updateStatus('停止后等待重说按钮');
+        if (attempts === 10) {
+          updateStatus('等待满 1 秒后重说');
         }
-        window.setTimeout(waitForReplay, 250);
+        window.setTimeout(waitForReplay, 100);
       } else {
         retrySequenceRunning = false;
         lastCycleActionAt = Date.now();
@@ -973,18 +965,11 @@
       seenOutputRows.add(unseenOutputRow);
       lastOutputActivityAt = Date.now();
       lastSeenText = text;
-      retryEarliestAt = Date.now() + CONFIG.retryAfterGoldMs;
       if (stopButton) {
-        updateStatus('金色线已出现，0.5 秒后重说');
-        if (!interruptTimer) {
-          interruptTimer = window.setTimeout(() => {
-            interruptTimer = null;
-            if (!running || retrySequenceRunning) return;
-            if (getStopButton()) beginRetrySequence();
-          }, randomDelay(CONFIG.stopDelayMinMs, CONFIG.stopDelayMaxMs));
-        }
+        beginRetrySequence();
         return;
       }
+      retryEarliestAt = Date.now() + CONFIG.retryAfterPauseMs;
     }
 
     reloadForStall();
