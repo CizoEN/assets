@@ -1,9 +1,11 @@
 // ==UserScript==
 // @name         Mufy Auto Retry
 // @namespace    local.codex
-// @version      1.3
-// @description  Automatically retries Mufy responses on MUMU-1.5, with stall detection and automatic page refresh.
+// @version      1.4
+// @description  Automatically retries Mufy responses on MUMU-1.5, dismisses the retry prompt, and refreshes after every 10 retries.
 // @match        https://chat.mufy.ai/*
+// @downloadURL  https://raw.githubusercontent.com/CizoEN/assets/main/mufy-auto-retry.user.js
+// @updateURL    https://raw.githubusercontent.com/CizoEN/assets/main/mufy-auto-retry.user.js
 // @run-at       document-idle
 // @grant        none
 // @noframes
@@ -16,7 +18,7 @@
   window.__mufyAutoRetryInstalled = true;
 
   const CONFIG = {
-    maxRetries: Infinity,
+    maxRetries: 10,
     minGapMs: 2600,
     stallTimeoutMs: 120000,
     resumeDelayMs: 2200,
@@ -120,6 +122,30 @@
     }
 
     return button;
+  }
+
+  function confirmRetryDialog() {
+    const dialogs = Array.from(document.querySelectorAll('[role="dialog"]'));
+    const dialog = dialogs.find((item) => {
+      const text = (item.textContent || '').replace(/\s+/g, '');
+      return text.includes('是否进行重说') && text.includes('取消');
+    });
+    if (!dialog) return false;
+
+    const checkbox = dialog.querySelector(
+      '[role="checkbox"], input[type="checkbox"]'
+    );
+    if (checkbox && checkbox.getAttribute('aria-checked') !== 'true') {
+      checkbox.click();
+    }
+
+    const retryButton = Array.from(dialog.querySelectorAll('button')).find(
+      (button) => (button.textContent || '').trim() === '重说'
+    );
+    if (!retryButton) return false;
+
+    window.setTimeout(() => retryButton.click(), 40);
+    return true;
   }
 
   function getModelName() {
@@ -237,10 +263,29 @@
     );
 
     if (retries >= CONFIG.maxRetries) {
-      stop('已达上限');
+      window.setTimeout(() => {
+        if (!confirmRetryDialog()) {
+          refreshAfterCycle();
+        } else {
+          window.setTimeout(refreshAfterCycle, 800);
+        }
+      }, 120);
     } else {
       updateStatus('等待下一次输出');
     }
+  }
+
+  function refreshAfterCycle() {
+    stop('自动刷新中');
+    sessionStorage.setItem(
+      RESUME_KEY,
+      JSON.stringify({
+        retries: 0,
+        maxRetries: savedMaxRetries(),
+        savedAt: Date.now(),
+      })
+    );
+    window.location.reload();
   }
 
   function reloadForStall() {
@@ -254,6 +299,11 @@
 
   function scan() {
     if (!running || document.hidden || userIsTyping()) return;
+
+    if (confirmRetryDialog()) {
+      updateStatus('已勾选不再提示');
+      return;
+    }
 
     if (!isExpectedModel()) {
       stop(`模型不是 ${CONFIG.expectedModel}`);
