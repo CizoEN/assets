@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mufy Auto Retry
 // @namespace    local.codex
-// @version      4.3
+// @version      4.4
 // @description  Automatically retries Mufy responses on MUMU-1.5, dismisses the retry prompt, and refreshes after every 10 retries.
 // @match        https://chat.mufy.ai/*
 // @downloadURL  https://raw.githubusercontent.com/CizoEN/assets/main/mufy-auto-retry.user.js
@@ -30,9 +30,10 @@
   const CONFIG = {
     maxRetries: 10,
     minGapMinMs: 0,
-    minGapMaxMs: 80,
-    stopDelayMinMs: 300,
-    stopDelayMaxMs: 400,
+    minGapMaxMs: 50,
+    stopDelayMinMs: 80,
+    stopDelayMaxMs: 160,
+    retryAfterGoldMs: 500,
     retrySettleMinMs: 50,
     retrySettleMaxMs: 100,
     replayWaitTimeoutMs: 50000,
@@ -53,7 +54,7 @@
     expectedModel: 'MUMU-1.5',
   };
 
-  const SCRIPT_VERSION = 'v4.3';
+  const SCRIPT_VERSION = 'v4.4';
   const AUTO_STOP_AT = new Date('2026-11-24T07:55:00+08:00').getTime();
   const AI_ROW_SELECTOR = '.flex.items-start.px-3.py-2';
   const RETRY_BUTTON_SELECTOR = '#mufy_chat_input_replay_btn';
@@ -76,6 +77,7 @@
   let lastModelActionAt = 0;
   let lastModelFailureAt = 0;
   let lastCycleActionAt = 0;
+  let retryEarliestAt = 0;
   let rateLimitUntil = 0;
   let retrySequenceRunning = false;
   let retryDialogActionRunning = false;
@@ -608,6 +610,7 @@
     expectingOutput = false;
     lastOutputActivityAt = Date.now();
     lastCycleActionAt = Date.now();
+    retryEarliestAt = 0;
     lastSeenText = getLatestAiText();
     lastUserMessageCount = getUserMessageCount();
     markAiRowsSeen();
@@ -657,6 +660,7 @@
       CONFIG.minGapMaxMs
     );
     lastCycleActionAt = Date.now();
+    retryEarliestAt = 0;
     lastSeenText = getLatestAiText();
     expectingOutput = true;
     lastOutputActivityAt = Date.now();
@@ -724,7 +728,12 @@
       const stop = getStopButton();
       const retryButton = getRetryButton();
 
-      if (!stop && retryButton && Date.now() >= nextAllowedAt) {
+      if (
+        !stop &&
+        retryButton &&
+        Date.now() >= nextAllowedAt &&
+        Date.now() >= retryEarliestAt
+      ) {
         retrySequenceRunning = false;
         clickRetry(retryButton);
         return;
@@ -765,6 +774,7 @@
 
     seedInProgress = true;
     lastCycleActionAt = Date.now();
+    retryEarliestAt = 0;
     updateStatus('没有输出，发送 1');
 
     const valueSetter = Object.getOwnPropertyDescriptor(
@@ -888,7 +898,11 @@
 
     const idleFor = Date.now() - lastCycleActionAt;
     const retryButton = getRetryButton();
-    if (retryButton && idleFor >= CONFIG.idleRetryGraceMs) {
+    if (
+      retryButton &&
+      idleFor >= CONFIG.idleRetryGraceMs &&
+      Date.now() >= retryEarliestAt
+    ) {
       updateStatus('已找到重说按钮');
       clickRetry(retryButton);
       return true;
@@ -959,8 +973,9 @@
       seenOutputRows.add(unseenOutputRow);
       lastOutputActivityAt = Date.now();
       lastSeenText = text;
+      retryEarliestAt = Date.now() + CONFIG.retryAfterGoldMs;
       if (stopButton) {
-        updateStatus('金色线已出现，准备重说');
+        updateStatus('金色线已出现，0.5 秒后重说');
         if (!interruptTimer) {
           interruptTimer = window.setTimeout(() => {
             interruptTimer = null;
