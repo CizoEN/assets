@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mufy Auto Retry
 // @namespace    local.codex
-// @version      3.8
+// @version      3.9
 // @description  Automatically retries Mufy responses on MUMU-1.5, dismisses the retry prompt, and refreshes after every 10 retries.
 // @match        https://chat.mufy.ai/*
 // @downloadURL  https://raw.githubusercontent.com/CizoEN/assets/main/mufy-auto-retry.user.js
@@ -53,7 +53,8 @@
     expectedModel: 'MUMU-1.5',
   };
 
-  const SCRIPT_VERSION = 'v3.8';
+  const SCRIPT_VERSION = 'v3.9';
+  const AUTO_STOP_AT = new Date('2026-11-24T07:55:00+08:00').getTime();
   const AI_ROW_SELECTOR = '.flex.items-start.px-3.py-2';
   const RETRY_BUTTON_SELECTOR = '#mufy_chat_input_replay_btn';
   const MODEL_BUTTON_SELECTOR = '#mufy_chat_input_model_btn';
@@ -85,6 +86,7 @@
   let pollTimer = null;
   let interruptTimer = null;
   let seenOutputRows = new WeakSet();
+  let autoStopHandled = false;
 
   function displayMaxRetries() {
     return Number.isFinite(CONFIG.maxRetries) ? CONFIG.maxRetries : '∞';
@@ -185,12 +187,11 @@
     return row.querySelector('.react-markdown') ? row : null;
   }
 
-  function getOutputBodyText(row = getLatestAiRow()) {
-    const markdown = row?.querySelector('.react-markdown');
-    if (!markdown) return '';
-    const content = markdown.cloneNode(true);
-    content.querySelectorAll('.min-pre-stage').forEach((node) => node.remove());
-    return (content.textContent || '').replace(/\s+/g, ' ').trim();
+  function getGoldenOutputLine(row) {
+    const line = row?.querySelector(
+      '.react-markdown .min-pre-stage .min-pre-bar'
+    );
+    return isUiVisible(line) ? line : null;
   }
 
   function getLatestAiText() {
@@ -569,8 +570,22 @@
     updateStatus(reason);
   }
 
+  function enforceAutoStop() {
+    if (Date.now() < AUTO_STOP_AT || autoStopHandled) {
+      return Date.now() >= AUTO_STOP_AT;
+    }
+
+    autoStopHandled = true;
+    userStopped = true;
+    const stopButton = getStopButton();
+    if (stopButton) dispatchClick(stopButton);
+    stop('中国时间 07:55，已全部暂停');
+    return true;
+  }
+
   function start(options = {}) {
     if (running) return;
+    if (enforceAutoStop()) return;
 
     if (!isExpectedModel()) {
       selectExpectedModel();
@@ -896,6 +911,7 @@
 
   function scan() {
     if (!running || userIsTyping()) return;
+    if (enforceAutoStop()) return;
 
     if (confirmSessionConflict()) {
       updateStatus('已终止冲突对话');
@@ -939,15 +955,15 @@
       lastOutputActivityAt = Date.now();
     }
 
-    const outputBodyText = getOutputBodyText(unseenOutputRow);
-    if (unseenOutputRow && outputBodyText) {
+    const goldenLine = getGoldenOutputLine(unseenOutputRow);
+    if (unseenOutputRow) {
       const stopButton = getStopButton();
-      if (!stopButton && !getRetryButton()) return;
+      if (!goldenLine || (!stopButton && !getRetryButton())) return;
       seenOutputRows.add(unseenOutputRow);
       lastOutputActivityAt = Date.now();
       lastSeenText = text;
       if (stopButton) {
-        updateStatus('检测到第一个字，准备暂停');
+        updateStatus('金色线已出现，准备重说');
         if (!interruptTimer) {
           interruptTimer = window.setTimeout(() => {
             interruptTimer = null;
@@ -957,25 +973,10 @@
         }
         return;
       }
-    } else if (unseenOutputRow) {
-      return;
     }
 
     reloadForStall();
     if (advanceWhenIdle()) return;
-    if (!textAdvanced) return;
-
-    const stopButton = getStopButton();
-    if (stopButton) {
-      if (!interruptTimer) {
-        updateStatus('检测到输出，准备暂停');
-        interruptTimer = window.setTimeout(() => {
-          interruptTimer = null;
-          if (!running || retrySequenceRunning) return;
-          if (getStopButton()) beginRetrySequence();
-        }, randomDelay(CONFIG.stopDelayMinMs, CONFIG.stopDelayMaxMs));
-      }
-    }
   }
 
   function scheduleScan() {
@@ -1002,6 +1003,13 @@
     subtree: true,
     characterData: true,
   });
+
+  const autoStopDelay = AUTO_STOP_AT - Date.now();
+  if (autoStopDelay <= 0) {
+    window.setTimeout(enforceAutoStop, 0);
+  } else {
+    window.setTimeout(enforceAutoStop, autoStopDelay);
+  }
 
   function resumeAfterReload() {
     let resumeData = null;
@@ -1044,6 +1052,7 @@
 
   // Keep trying until Mufy has restored its model UI and the watcher is running.
   window.setInterval(() => {
+    if (enforceAutoStop()) return;
     if (userStopped || modelSwitchInProgress) return;
     if (!document.querySelector(MODEL_BUTTON_SELECTOR)) return;
 
