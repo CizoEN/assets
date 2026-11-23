@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mufy Auto Retry
 // @namespace    local.codex
-// @version      3.2
+// @version      3.3
 // @description  Automatically retries Mufy responses on MUMU-1.5, dismisses the retry prompt, and refreshes after every 10 retries.
 // @match        https://chat.mufy.ai/*
 // @downloadURL  https://raw.githubusercontent.com/CizoEN/assets/main/mufy-auto-retry.user.js
@@ -35,6 +35,7 @@
     stopDelayMaxMs: 1500,
     retrySettleMinMs: 900,
     retrySettleMaxMs: 1400,
+    replayWaitTimeoutMs: 50000,
     modelActionDelayMs: 650,
     modelSelectionSettleMs: 900,
     modelCommitTimeoutMs: 12000,
@@ -44,6 +45,7 @@
     idleSeedDelayMs: 9000,
     emptySeedDelayMs: 3200,
     retryDialogSettleMs: 180,
+    rateLimitCooldownMs: 45000,
     stallTimeoutMs: 120000,
     resumeDelayMs: 3000,
     mutationDebounceMs: 140,
@@ -51,7 +53,7 @@
     expectedModel: 'MUMU-1.5',
   };
 
-  const SCRIPT_VERSION = 'v3.2';
+  const SCRIPT_VERSION = 'v3.3';
   const AI_ROW_SELECTOR = '.flex.items-start.px-3.py-2';
   const RETRY_BUTTON_SELECTOR = '#mufy_chat_input_replay_btn';
   const MODEL_BUTTON_SELECTOR = '#mufy_chat_input_model_btn';
@@ -69,6 +71,7 @@
   let lastModelActionAt = 0;
   let lastModelFailureAt = 0;
   let lastCycleActionAt = 0;
+  let rateLimitUntil = 0;
   let retrySequenceRunning = false;
   let retryDialogActionRunning = false;
   let modelSwitchInProgress = false;
@@ -642,6 +645,7 @@
 
     let attempts = 0;
     let stableReplayChecks = 0;
+    const maxReplayChecks = Math.ceil(CONFIG.replayWaitTimeoutMs / 350);
     const waitForReplay = () => {
       if (!running) {
         retrySequenceRunning = false;
@@ -675,7 +679,10 @@
       }
 
       attempts += 1;
-      if (attempts < 45) {
+      if (attempts < maxReplayChecks) {
+        if (attempts === 20) {
+          updateStatus('停止后等待重说按钮');
+        }
         window.setTimeout(waitForReplay, 350);
       } else {
         retrySequenceRunning = false;
@@ -782,6 +789,28 @@
     window.location.reload();
   }
 
+  function handleRateLimit() {
+    if (rateLimitUntil) {
+      if (Date.now() < rateLimitUntil) return true;
+      rateLimitUntil = 0;
+      saveResumeState();
+      stop('自动刷新中');
+      window.location.reload();
+      return true;
+    }
+
+    if (
+      !/too many requests,\s*please try again later/i.test(getLatestAiText())
+    ) {
+      return false;
+    }
+
+    rateLimitUntil = Date.now() + CONFIG.rateLimitCooldownMs;
+    lastCycleActionAt = Date.now();
+    updateStatus('触发限流，45 秒后自动刷新');
+    return true;
+  }
+
   function advanceWhenIdle() {
     if (
       retrySequenceRunning ||
@@ -827,6 +856,8 @@
       updateStatus('已勾选不再提示');
       return;
     }
+
+    if (handleRateLimit()) return;
 
     if (retrySequenceRunning) return;
 
@@ -972,6 +1003,7 @@
       hasRetry: Boolean(getRetryButton()),
       hasRetryDialog: Boolean(getRetryDialog()),
       hasModelDialog: Boolean(getModelDialog()),
+      rateLimitUntil,
       latestText: getLatestAiText(),
     }),
   };
