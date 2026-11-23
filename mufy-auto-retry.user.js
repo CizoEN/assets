@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mufy Auto Retry
 // @namespace    local.codex
-// @version      3.9.6
+// @version      3.9.7
 // @description  Automatically retries Mufy responses on MUMU-1.5, dismisses the retry prompt, and refreshes after every 10 retries.
 // @match        https://chat.mufy.ai/*
 // @downloadURL  https://raw.githubusercontent.com/CizoEN/assets/main/mufy-auto-retry.user.js
@@ -60,7 +60,7 @@
     expectedModel: 'MUMU-1.5',
   };
 
-  const SCRIPT_VERSION = 'v3.9.6';
+  const SCRIPT_VERSION = 'v3.9.7';
   const AUTO_STOP_AT = new Date('2026-11-24T07:55:00+08:00').getTime();
   const AI_ROW_SELECTOR = '.flex.items-start.px-3.py-2';
   const RETRY_BUTTON_SELECTOR = '#mufy_chat_input_replay_btn';
@@ -185,12 +185,9 @@
 
   function pressSendButton(element) {
     if (!element) return;
+    element.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     const rect = element.getBoundingClientRect();
-    const hitTarget =
-      document.elementFromPoint(
-        rect.left + rect.width / 2,
-        rect.top + rect.height / 2
-      ) || element;
+    const hitTarget = element.querySelector('svg path') || element;
     const options = {
       bubbles: true,
       cancelable: true,
