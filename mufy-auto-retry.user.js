@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mufy Auto Retry
 // @namespace    local.codex
-// @version      3.3
+// @version      3.4
 // @description  Automatically retries Mufy responses on MUMU-1.5, dismisses the retry prompt, and refreshes after every 10 retries.
 // @match        https://chat.mufy.ai/*
 // @downloadURL  https://raw.githubusercontent.com/CizoEN/assets/main/mufy-auto-retry.user.js
@@ -45,7 +45,7 @@
     idleSeedDelayMs: 9000,
     emptySeedDelayMs: 3200,
     retryDialogSettleMs: 180,
-    rateLimitCooldownMs: 45000,
+    rateLimitRefreshDelayMs: 1500,
     stallTimeoutMs: 120000,
     resumeDelayMs: 3000,
     mutationDebounceMs: 140,
@@ -53,12 +53,15 @@
     expectedModel: 'MUMU-1.5',
   };
 
-  const SCRIPT_VERSION = 'v3.3';
+  const SCRIPT_VERSION = 'v3.4';
   const AI_ROW_SELECTOR = '.flex.items-start.px-3.py-2';
   const RETRY_BUTTON_SELECTOR = '#mufy_chat_input_replay_btn';
   const MODEL_BUTTON_SELECTOR = '#mufy_chat_input_model_btn';
   const USER_MESSAGE_SELECTOR = '.mufy_user_message_bubble';
   const RESUME_KEY = 'mufy-auto-retry-resume';
+  const SEED_KEY = `mufy-auto-retry-seeded:${
+    pageUrl.searchParams.get('sessionId') || 'default'
+  }`;
 
   let running = false;
   let retries = 0;
@@ -76,7 +79,7 @@
   let retryDialogActionRunning = false;
   let modelSwitchInProgress = false;
   let seedInProgress = false;
-  let cycleSeedAttempts = 0;
+  let seedSent = sessionStorage.getItem(SEED_KEY) === '1';
   let userStopped = false;
   let mutationTimer = null;
   let pollTimer = null;
@@ -552,7 +555,6 @@
     expectingOutput = false;
     lastOutputActivityAt = Date.now();
     lastCycleActionAt = Date.now();
-    cycleSeedAttempts = 0;
     lastSeenText = getLatestAiText();
     lastUserMessageCount = getUserMessageCount();
     updateStatus('等待新输出');
@@ -597,7 +599,6 @@
       CONFIG.minGapMaxMs
     );
     lastCycleActionAt = Date.now();
-    cycleSeedAttempts = 0;
     lastSeenText = getLatestAiText();
     expectingOutput = true;
     lastOutputActivityAt = Date.now();
@@ -697,13 +698,18 @@
     );
   }
 
+  function markSeedSent() {
+    seedSent = true;
+    sessionStorage.setItem(SEED_KEY, '1');
+  }
+
   function sendOneFallback() {
-    if (seedInProgress) return;
+    if (seedInProgress || seedSent) return false;
     const textarea = document.querySelector('#mufy_chat_input_box textarea');
     const inputBox = document.querySelector('#mufy_chat_input_box');
     if (!textarea || !inputBox) {
       updateStatus('未找到输入框');
-      return;
+      return false;
     }
 
     seedInProgress = true;
@@ -739,10 +745,12 @@
       if (sendButton) {
         dispatchClick(sendButton);
         seedInProgress = false;
+        markSeedSent();
         expectingOutput = true;
         lastOutputActivityAt = Date.now();
         lastCycleActionAt = Date.now();
         lastUserMessageCount = getUserMessageCount();
+        updateStatus('已发送 1，后续只用重说');
         return;
       }
 
@@ -762,9 +770,15 @@
         })
       );
       seedInProgress = false;
+      markSeedSent();
+      expectingOutput = true;
+      lastOutputActivityAt = Date.now();
+      lastCycleActionAt = Date.now();
+      updateStatus('已发送 1，后续只用重说');
     };
 
     window.setTimeout(submit, 80);
+    return true;
   }
 
   function refreshAfterCycle() {
@@ -790,14 +804,7 @@
   }
 
   function handleRateLimit() {
-    if (rateLimitUntil) {
-      if (Date.now() < rateLimitUntil) return true;
-      rateLimitUntil = 0;
-      saveResumeState();
-      stop('自动刷新中');
-      window.location.reload();
-      return true;
-    }
+    if (rateLimitUntil) return true;
 
     if (
       !/too many requests,\s*please try again later/i.test(getLatestAiText())
@@ -805,9 +812,12 @@
       return false;
     }
 
-    rateLimitUntil = Date.now() + CONFIG.rateLimitCooldownMs;
+    rateLimitUntil = Date.now() + CONFIG.rateLimitRefreshDelayMs;
     lastCycleActionAt = Date.now();
-    updateStatus('触发限流，45 秒后自动刷新');
+    updateStatus('触发限流，正在刷新');
+    window.setTimeout(() => {
+      if (running) refreshAfterCycle();
+    }, CONFIG.rateLimitRefreshDelayMs);
     return true;
   }
 
@@ -833,11 +843,10 @@
 
     if (
       !retryButton &&
-      cycleSeedAttempts < 1 &&
+      !seedSent &&
       idleFor >=
         (lastSeenText ? CONFIG.idleSeedDelayMs : CONFIG.emptySeedDelayMs)
     ) {
-      cycleSeedAttempts += 1;
       sendOneFallback();
       return true;
     }
@@ -1004,6 +1013,7 @@
       hasRetryDialog: Boolean(getRetryDialog()),
       hasModelDialog: Boolean(getModelDialog()),
       rateLimitUntil,
+      seedSent,
       latestText: getLatestAiText(),
     }),
   };
