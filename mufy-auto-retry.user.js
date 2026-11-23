@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mufy Auto Retry
 // @namespace    local.codex
-// @version      1.10
+// @version      1.11
 // @description  Automatically retries Mufy responses on MUMU-1.5, dismisses the retry prompt, and refreshes after every 10 retries.
 // @match        https://chat.mufy.ai/*
 // @downloadURL  https://raw.githubusercontent.com/CizoEN/assets/main/mufy-auto-retry.user.js
@@ -37,7 +37,7 @@
     expectedModel: 'MUMU-1.5',
   };
 
-  const SCRIPT_VERSION = 'v1.10';
+  const SCRIPT_VERSION = 'v1.11';
   const AI_ROW_SELECTOR = '.flex.items-start.px-3.py-2';
   const RETRY_BUTTON_SELECTOR = '#mufy_chat_input_replay_btn';
   const MODEL_BUTTON_SELECTOR = '#mufy_chat_input_model_btn';
@@ -431,12 +431,12 @@
     retrySequenceRunning = true;
 
     const stopButton = getStopButton();
-    if (stopButton) {
-      stopButton.click();
-      updateStatus('检测到输出，正在停止');
-    } else {
-      updateStatus('检测到输出，准备重说');
+    if (!stopButton) {
+      retrySequenceRunning = false;
+      return;
     }
+    stopButton.click();
+    updateStatus('检测到输出，正在停止');
 
     let attempts = 0;
     const waitForReplay = () => {
@@ -588,16 +588,20 @@
     }
 
     const text = getLatestAiText();
-    if (text && text !== lastSeenText) {
+    const textAdvanced = Boolean(text && text !== lastSeenText);
+    if (textAdvanced) {
       lastSeenText = text;
       expectingOutput = false;
       lastOutputActivityAt = Date.now();
     }
 
     reloadForStall();
-    if (!text || Date.now() < nextAllowedAt) return;
+    if (!textAdvanced || Date.now() < nextAllowedAt) return;
 
-    beginRetrySequence();
+    const stopButton = getStopButton();
+    if (stopButton) {
+      beginRetrySequence();
+    }
   }
 
   function scheduleScan() {
