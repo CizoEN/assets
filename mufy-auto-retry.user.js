@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mufy Auto Retry
 // @namespace    local.codex
-// @version      2.1
+// @version      3.0
 // @description  Automatically retries Mufy responses on MUMU-1.5, dismisses the retry prompt, and refreshes after every 10 retries.
 // @match        https://chat.mufy.ai/*
 // @downloadURL  https://raw.githubusercontent.com/CizoEN/assets/main/mufy-auto-retry.user.js
@@ -29,7 +29,10 @@
 
   const CONFIG = {
     maxRetries: 10,
-    minGapMs: 1200,
+    minGapMinMs: 3200,
+    minGapMaxMs: 5200,
+    stopDelayMinMs: 550,
+    stopDelayMaxMs: 900,
     stallTimeoutMs: 120000,
     resumeDelayMs: 2200,
     mutationDebounceMs: 80,
@@ -37,7 +40,7 @@
     expectedModel: 'MUMU-1.5',
   };
 
-  const SCRIPT_VERSION = 'v2.1';
+  const SCRIPT_VERSION = 'v3.0';
   const AI_ROW_SELECTOR = '.flex.items-start.px-3.py-2';
   const RETRY_BUTTON_SELECTOR = '#mufy_chat_input_replay_btn';
   const MODEL_BUTTON_SELECTOR = '#mufy_chat_input_model_btn';
@@ -58,6 +61,7 @@
   let userStopped = false;
   let mutationTimer = null;
   let pollTimer = null;
+  let interruptTimer = null;
 
   function displayMaxRetries() {
     return Number.isFinite(CONFIG.maxRetries) ? CONFIG.maxRetries : '∞';
@@ -67,6 +71,10 @@
     return Number.isFinite(CONFIG.maxRetries)
       ? CONFIG.maxRetries
       : 'Infinity';
+  }
+
+  function randomDelay(min, max) {
+    return Math.round(min + Math.random() * (max - min));
   }
 
   const panel = document.createElement('div');
@@ -335,6 +343,8 @@
     nextAllowedAt = 0;
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = null;
+    if (interruptTimer) clearTimeout(interruptTimer);
+    interruptTimer = null;
     if (reason !== '自动刷新中') clearResumeState();
     updateStatus(reason);
   }
@@ -401,7 +411,10 @@
 
   function clickRetry(button) {
     retries += 1;
-    nextAllowedAt = Date.now() + CONFIG.minGapMs;
+    nextAllowedAt = Date.now() + randomDelay(
+      CONFIG.minGapMinMs,
+      CONFIG.minGapMaxMs
+    );
     lastSeenText = getLatestAiText();
     expectingOutput = true;
     lastOutputActivityAt = Date.now();
@@ -421,7 +434,7 @@
         if (!confirmRetryDialog()) {
           refreshAfterCycle();
         } else {
-          window.setTimeout(refreshAfterCycle, 800);
+          window.setTimeout(refreshAfterCycle, 1800);
         }
       }, 120);
     } else {
@@ -603,7 +616,14 @@
 
     const stopButton = getStopButton();
     if (stopButton) {
-      beginRetrySequence();
+      if (!interruptTimer) {
+        updateStatus('检测到输出，准备暂停');
+        interruptTimer = window.setTimeout(() => {
+          interruptTimer = null;
+          if (!running || retrySequenceRunning) return;
+          if (getStopButton()) beginRetrySequence();
+        }, randomDelay(CONFIG.stopDelayMinMs, CONFIG.stopDelayMaxMs));
+      }
     }
   }
 
