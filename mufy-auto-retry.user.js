@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mufy Auto Retry
 // @namespace    local.codex
-// @version      3.9.1
+// @version      3.9.2
 // @description  Automatically retries Mufy responses on MUMU-1.5, dismisses the retry prompt, and refreshes after every 10 retries.
 // @match        https://chat.mufy.ai/*
 // @downloadURL  https://raw.githubusercontent.com/CizoEN/assets/main/mufy-auto-retry.user.js
@@ -50,6 +50,8 @@
     idleRefreshTimeoutMs: 90000,
     emptyChatDetectMs: 3000,
     emptySeedRetryMs: 15000,
+    noOutputFallbackMs: 5000,
+    fallbackCooldownMs: 10000,
     refreshCooldownMs: 30000,
     resumeDelayMs: 3000,
     mutationDebounceMs: 140,
@@ -57,7 +59,7 @@
     expectedModel: 'MUMU-1.5',
   };
 
-  const SCRIPT_VERSION = 'v3.9.1';
+  const SCRIPT_VERSION = 'v3.9.2';
   const AUTO_STOP_AT = new Date('2026-11-24T07:55:00+08:00').getTime();
   const AI_ROW_SELECTOR = '.flex.items-start.px-3.py-2';
   const RETRY_BUTTON_SELECTOR = '#mufy_chat_input_replay_btn';
@@ -82,6 +84,7 @@
   let lastCycleActionAt = 0;
   let lastProgressAt = 0;
   let emptyChatSince = 0;
+  let lastFallbackAt = 0;
   let rateLimitUntil = 0;
   let retrySequenceRunning = false;
   let retryDialogActionRunning = false;
@@ -784,8 +787,8 @@
     sessionStorage.setItem(SEED_KEY, '1');
   }
 
-  function sendOneFallback() {
-    if (seedInProgress || seedSent) return false;
+  function sendOneFallback(force = false) {
+    if (seedInProgress || (seedSent && !force)) return false;
     const textarea = document.querySelector('#mufy_chat_input_box textarea');
     const inputBox = document.querySelector('#mufy_chat_input_box');
     if (!textarea || !inputBox) {
@@ -796,7 +799,8 @@
     seedInProgress = true;
     lastCycleActionAt = Date.now();
     lastProgressAt = Date.now();
-    updateStatus('没有输出，发送 1');
+    lastFallbackAt = Date.now();
+    updateStatus(force ? '5 秒无输出，自动发送 1' : '没有输出，发送 1');
 
     const valueSetter = Object.getOwnPropertyDescriptor(
       HTMLTextAreaElement.prototype,
@@ -1014,6 +1018,16 @@
       expectingOutput = false;
       lastOutputActivityAt = Date.now();
       lastProgressAt = Date.now();
+    }
+
+    if (
+      !hasActivePageControl() &&
+      Date.now() - lastProgressAt >= CONFIG.noOutputFallbackMs &&
+      Date.now() - lastFallbackAt >= CONFIG.fallbackCooldownMs
+    ) {
+      seedSent = false;
+      sendOneFallback(true);
+      return;
     }
 
     const goldenLine = getGoldenOutputLine(unseenOutputRow);
