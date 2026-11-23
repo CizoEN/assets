@@ -315,6 +315,12 @@
       }, CONFIG.modelActionDelayMs);
     };
 
+    if (!alreadySelected && !option && !isExpectedModel()) {
+      modelSwitchInProgress = false;
+      updateStatus(`未找到 ${CONFIG.expectedModel}`);
+      return true;
+    }
+
     if (alreadySelected || !option) {
       clickConfirm();
       return true;
