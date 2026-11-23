@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mufy Auto Retry
 // @namespace    local.codex
-// @version      1.6
+// @version      1.7
 // @description  Automatically retries Mufy responses on MUMU-1.5, dismisses the retry prompt, and refreshes after every 10 retries.
 // @match        https://chat.mufy.ai/*
 // @downloadURL  https://raw.githubusercontent.com/CizoEN/assets/main/mufy-auto-retry.user.js
@@ -41,6 +41,7 @@
   let lastOutputActivityAt = 0;
   let nextAllowedAt = 0;
   let lastConflictClickAt = 0;
+  let retrySequenceRunning = false;
   let mutationTimer = null;
   let pollTimer = null;
 
@@ -126,6 +127,25 @@
     }
 
     return button;
+  }
+
+  function getStopButton() {
+    return (
+      Array.from(
+        document.querySelectorAll('#mufy_chat_input_box button, #mufy_chat_input_box div')
+      ).find((element) => {
+        if ((element.textContent || '').trim() !== '停止') return false;
+        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return (
+          style.display !== 'none' &&
+          style.visibility !== 'hidden' &&
+          style.pointerEvents !== 'none' &&
+          rect.width > 0 &&
+          rect.height > 0
+        );
+      }) || null
+    );
   }
 
   function confirmRetryDialog() {
@@ -310,6 +330,49 @@
     }
   }
 
+  function beginRetrySequence() {
+    if (retrySequenceRunning || !running) return;
+    retrySequenceRunning = true;
+
+    const stopButton = getStopButton();
+    if (stopButton) {
+      stopButton.click();
+      updateStatus('检测到输出，正在停止');
+    } else {
+      updateStatus('检测到输出，准备重说');
+    }
+
+    let attempts = 0;
+    const waitForReplay = () => {
+      if (!running) {
+        retrySequenceRunning = false;
+        return;
+      }
+
+      if (confirmSessionConflict()) {
+        updateStatus('已终止冲突对话');
+      }
+      confirmRetryDialog();
+
+      const retryButton = getRetryButton();
+      if (retryButton) {
+        retrySequenceRunning = false;
+        clickRetry(retryButton);
+        return;
+      }
+
+      attempts += 1;
+      if (attempts < 50) {
+        window.setTimeout(waitForReplay, 100);
+      } else {
+        retrySequenceRunning = false;
+        updateStatus('重说按钮未恢复');
+      }
+    };
+
+    window.setTimeout(waitForReplay, 80);
+  }
+
   function refreshAfterCycle() {
     stop('自动刷新中');
     sessionStorage.setItem(
@@ -345,6 +408,8 @@
       return;
     }
 
+    if (retrySequenceRunning) return;
+
     if (!isExpectedModel()) {
       stop(`模型不是 ${CONFIG.expectedModel}`);
       return;
@@ -368,13 +433,7 @@
     reloadForStall();
     if (!text || Date.now() < nextAllowedAt) return;
 
-    const button = getRetryButton();
-    if (!button) {
-      updateStatus('未找到重说');
-      return;
-    }
-
-    clickRetry(button);
+    beginRetrySequence();
   }
 
   function scheduleScan() {
